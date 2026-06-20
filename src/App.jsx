@@ -105,7 +105,7 @@ const bboxOf = (pts) => {
 // ============ THE LAYOUT ENGINE ============
 // Zone grid: 3x3 cells, each tagged with a compass direction.
 // The grid is in PLOT-LOCAL space (before rotation). We rotate which compass
-// label each cell carries based on the plot's facing, so "SE cell" really points SE.
+// label each cell carries based on the plot facing, so "SE cell" really points SE.
 
 // base 3x3 compass layout when front faces South (facing=180, front at bottom = South)
 // rows top->bottom, cols left->right. We'll rotate this by facing.
@@ -430,6 +430,40 @@ function buildFloorList(hasBasement, floorsCount, topMode) {
   return list;
 }
 
+// ===== PHASE 1: THE BRIEF =====
+const FAMILY_TYPES = [
+  { id: "single", label: "Just me", icon: "🧑", desc: "A home for one" },
+  { id: "couple", label: "A couple", icon: "💑", desc: "Two people" },
+  { id: "family", label: "Family with children", icon: "👨‍👩‍👧", desc: "Parents and kids" },
+  { id: "joint", label: "Joint family", icon: "👨‍👩‍👧‍👦", desc: "Multiple generations" },
+];
+// each family type pre-fills a sensible starting room program
+const PROGRAM_TEMPLATES = {
+  single: { bedrooms: 1, bathrooms: 1, kitchens: 1, pooja: false, dining: false, study: true,  guest: false, store: true,  utility: false, parking: true,  garden: false, balcony: true },
+  couple: { bedrooms: 2, bathrooms: 2, kitchens: 1, pooja: true,  dining: true,  study: false, guest: false, store: true,  utility: true,  parking: true,  garden: true,  balcony: true },
+  family: { bedrooms: 3, bathrooms: 2, kitchens: 1, pooja: true,  dining: true,  study: true,  guest: true,  store: true,  utility: true,  parking: true,  garden: true,  balcony: true },
+  joint:  { bedrooms: 4, bathrooms: 3, kitchens: 2, pooja: true,  dining: true,  study: true,  guest: true,  store: true,  utility: true,  parking: true,  garden: true,  balcony: true },
+};
+const PROGRAM_TOGGLES = [
+  { id: "pooja",   label: "Pooja Room",  icon: "🪔" },
+  { id: "dining",  label: "Dining Room", icon: "🍽️" },
+  { id: "study",   label: "Study/Office",icon: "💻" },
+  { id: "guest",   label: "Guest Room",  icon: "🛌" },
+  { id: "store",   label: "Store",       icon: "📦" },
+  { id: "utility", label: "Utility/Wash",icon: "🧺" },
+  { id: "parking", label: "Parking",     icon: "🚗" },
+  { id: "garden",  label: "Garden",      icon: "🌿" },
+  { id: "balcony", label: "Balcony",     icon: "🌅" },
+];
+const PRIORITIES = [
+  { id: "light",   label: "Natural light",    icon: "☀️" },
+  { id: "privacy", label: "Privacy",          icon: "🔒" },
+  { id: "social",  label: "Space to entertain", icon: "🎉" },
+  { id: "work",    label: "A quiet work corner", icon: "💻" },
+  { id: "vastu",   label: "Vastu alignment",  icon: "🧭" },
+  { id: "cost",    label: "Low cost",         icon: "💰" },
+];
+
 const STYLES = [
   { id: "vastu",  label: "Vastu-First",       icon: "🧭", desc: "Rooms placed by Vastu directions", premium: false, needsVastu: true },
   { id: "social", label: "Open & Social",     icon: "🛋️", desc: "Living, dining, kitchen flow together", premium: false },
@@ -438,7 +472,11 @@ const STYLES = [
 ];
 
 export default function App() {
-  const [step, setStep] = useState("input");
+  const [step, setStep] = useState("brief1");
+  // PHASE 1 — THE BRIEF
+  const [familyType, setFamilyType] = useState(null);
+  const [program, setProgram] = useState(PROGRAM_TEMPLATES.family);
+  const [priorities, setPriorities] = useState([]);
   const [projectName, setProjectName] = useState("");
   const [purpose, setPurpose] = useState("residential");
   const [shapeType, setShapeType] = useState("rect");
@@ -459,7 +497,7 @@ export default function App() {
   const [gates, setGates] = useState({ front: true, right: false, rear: false, left: false });
   const [courtyardOn, setCourtyardOn] = useState(false);
   const [courtyardSize, setCourtyardSize] = useState(120);
-  const [vastuOn, setVastuOn] = useState(true);
+  const [vastuOn, setVastuOn] = useState(false);
   const [facing, setFacing] = useState(0);
   const [quality, setQuality] = useState("standard");
   const [floorData, setFloorData] = useState([]);
@@ -569,9 +607,10 @@ export default function App() {
     { id: 4, label: "Design", icon: "✨" },
   ];
   const STEP_PHASE = {
+    brief1: 1, brief2: 1, brief3: 1,
     input: 2, config: 3, vertical: 3, surround: 2, direction: 2, floor: 3, style: 4, summary: 4,
   };
-  const currentPhase = STEP_PHASE[step] || 2;
+  const currentPhase = STEP_PHASE[step] || 1;
   const ProgressArc = () => (
     <div style={{ display: "flex", alignItems: "center", padding: "10px 16px 4px", maxWidth: 430, margin: "0 auto" }}>
       {PHASES.map((p, i) => {
@@ -599,13 +638,123 @@ export default function App() {
   );
 
   // PAGE 1
-  if (step === "input") return (
+  // ===== PHASE 1 HANDLERS =====
+  const pickFamily = (id) => {
+    setFamilyType(id);
+    setProgram(PROGRAM_TEMPLATES[id]);
+    setStep("brief2");
+  };
+  const stepCount = (key, delta, min, max) => setProgram(p => ({ ...p, [key]: Math.max(min, Math.min(max, p[key] + delta)) }));
+  const toggleProg = (key) => setProgram(p => ({ ...p, [key]: !p[key] }));
+  const togglePriority = (id) => setPriorities(ps => ps.includes(id) ? ps.filter(x => x !== id) : (ps.length >= 3 ? ps : [...ps, id]));
+  const finishBrief = () => {
+    // priorities flow through: Vastu priority turns on Vastu mode
+    if (priorities.includes("vastu")) setVastuOn(true);
+    setStep("input");
+  };
+  const programSummary = () => {
+    const parts = [`${program.bedrooms} bed`, `${program.bathrooms} bath`];
+    if (program.kitchens > 1) parts.push(`${program.kitchens} kitchens`);
+    PROGRAM_TOGGLES.forEach(t => { if (program[t.id] && !["parking"].includes(t.id)) parts.push(t.label.split("/")[0].toLowerCase()); });
+    return parts.join(" · ");
+  };
+
+  // PHASE 1 — SCREEN 1: WHO IS THIS FOR
+  if (step === "brief1") return (
     <div style={s.root}>
       <div style={s.header}><div style={s.logo}>🏗️</div><div><div style={{ fontWeight: 900, fontSize: 20 }}>PlotAI</div><div style={{ color: C.muted, fontSize: 12 }}>Your AI Architect</div></div></div>
       <ProgressArc />
       <div style={s.body}>
-        <div style={{ fontWeight: 800, fontSize: 22, marginBottom: 4 }}>Your Plot</div>
-        <div style={{ color: C.muted, fontSize: 13, marginBottom: 18 }}>Enter your plot shape. We'll guide you to a full building, floor by floor.</div>
+        <div style={{ fontWeight: 800, fontSize: 22, marginBottom: 4 }}>Lets design your home</div>
+        <div style={{ color: C.muted, fontSize: 13, marginBottom: 20, lineHeight: 1.5 }}>Like a real architect, we'll start with your life — not numbers. First: who will live here?</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          {FAMILY_TYPES.map(ft => (
+            <div key={ft.id} onClick={() => pickFamily(ft.id)} style={{ background: familyType === ft.id ? C.accent + "22" : C.card, border: `1.5px solid ${familyType === ft.id ? C.accent : C.border}`, borderRadius: 14, padding: "18px 14px", cursor: "pointer", textAlign: "center" }}>
+              <div style={{ fontSize: 32 }}>{ft.icon}</div>
+              <div style={{ fontWeight: 700, fontSize: 14, marginTop: 8 }}>{ft.label}</div>
+              <div style={{ color: C.muted, fontSize: 11, marginTop: 2 }}>{ft.desc}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{ color: C.muted, fontSize: 11.5, marginTop: 18, textAlign: "center", lineHeight: 1.5 }}>Tap one to continue — we'll suggest the right rooms for you, which you can change.</div>
+      </div>
+    </div>
+  );
+
+  // PHASE 1 — SCREEN 2: ROOM PROGRAM
+  if (step === "brief2") return (
+    <div style={s.root}>
+      <div style={s.header}>{back(() => setStep("brief1"))}<div style={{ flex: 1 }}><div style={{ fontWeight: 900, fontSize: 18 }}>What your home needs</div><div style={{ color: C.muted, fontSize: 12 }}>Your room program</div></div></div>
+      <ProgressArc />
+      <div style={s.body}>
+        <div style={{ color: C.muted, fontSize: 12.5, marginBottom: 16, lineHeight: 1.5 }}>We have suggested rooms for a {FAMILY_TYPES.find(f => f.id === familyType)?.label.toLowerCase()}. Adjust anything to fit your life.</div>
+
+        {[["bedrooms", "Bedrooms", "🛏️", 1, 8], ["bathrooms", "Bathrooms", "🚿", 1, 6], ["kitchens", "Kitchens", "🍳", 1, 3]].map(([key, label, icon, min, max]) => (
+          <div key={key} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, background: C.card, borderRadius: 12, padding: "12px 14px", border: `1px solid ${C.border}` }}>
+            <span style={{ fontSize: 22 }}>{icon}</span>
+            <span style={{ flex: 1, fontWeight: 600, fontSize: 14 }}>{label}</span>
+            <button onClick={() => stepCount(key, -1, min, max)} style={{ width: 32, height: 32, borderRadius: 8, border: `1px solid ${C.border}`, background: C.surface, color: C.text, cursor: "pointer", fontSize: 18, fontWeight: 700 }}>−</button>
+            <span style={{ width: 30, textAlign: "center", fontWeight: 800, fontSize: 16, color: C.accent }}>{program[key]}</span>
+            <button onClick={() => stepCount(key, 1, min, max)} style={{ width: 32, height: 32, borderRadius: 8, border: `1px solid ${C.border}`, background: C.surface, color: C.text, cursor: "pointer", fontSize: 18, fontWeight: 700 }}>+</button>
+          </div>
+        ))}
+
+        <div style={{ fontWeight: 700, fontSize: 13, margin: "16px 0 8px" }}>Other spaces you would like</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+          {PROGRAM_TOGGLES.map(t => {
+            const on = program[t.id];
+            return (
+              <div key={t.id} onClick={() => toggleProg(t.id)} style={{ background: on ? C.accent + "22" : C.card, border: `1.5px solid ${on ? C.accent : C.border}`, borderRadius: 10, padding: "10px 6px", cursor: "pointer", textAlign: "center" }}>
+                <div style={{ fontSize: 20 }}>{t.icon}</div>
+                <div style={{ fontSize: 10.5, fontWeight: 600, marginTop: 4, color: on ? C.text : C.muted }}>{t.label}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ background: C.surface, borderRadius: 12, padding: 14, margin: "18px 0", border: `1px solid ${C.border}` }}>
+          <div style={{ color: C.muted, fontSize: 11, fontWeight: 600, marginBottom: 4 }}>YOUR HOME</div>
+          <div style={{ fontWeight: 700, fontSize: 13.5, lineHeight: 1.5 }}>{programSummary()}</div>
+        </div>
+
+        <button style={s.btn()} onClick={() => setStep("brief3")}>Continue → What matters most</button>
+      </div>
+    </div>
+  );
+
+  // PHASE 1 — SCREEN 3: PRIORITIES
+  if (step === "brief3") return (
+    <div style={s.root}>
+      <div style={s.header}>{back(() => setStep("brief2"))}<div style={{ flex: 1 }}><div style={{ fontWeight: 900, fontSize: 18 }}>What matters most</div><div style={{ color: C.muted, fontSize: 12 }}>Pick up to 3 — shapes your design</div></div></div>
+      <ProgressArc />
+      <div style={s.body}>
+        <div style={{ color: C.muted, fontSize: 12.5, marginBottom: 16, lineHeight: 1.5 }}>An architect designs around what you value most. Choose up to three — we'll optimize your layout for them. ({priorities.length}/3)</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          {PRIORITIES.map(pr => {
+            const on = priorities.includes(pr.id);
+            const dim = !on && priorities.length >= 3;
+            return (
+              <div key={pr.id} onClick={() => togglePriority(pr.id)} style={{ background: on ? C.accent + "22" : C.card, border: `1.5px solid ${on ? C.accent : C.border}`, borderRadius: 14, padding: "16px 12px", cursor: dim ? "not-allowed" : "pointer", textAlign: "center", opacity: dim ? 0.45 : 1 }}>
+                <div style={{ fontSize: 26 }}>{pr.icon}</div>
+                <div style={{ fontWeight: 700, fontSize: 13, marginTop: 6, color: on ? C.text : C.muted }}>{pr.label}</div>
+              </div>
+            );
+          })}
+        </div>
+        {priorities.includes("vastu") && <div style={{ background: C.purple + "18", border: `1px solid ${C.purple}55`, borderRadius: 10, padding: 12, marginTop: 14, fontSize: 12, color: C.purple, lineHeight: 1.5 }}>🧭 Vastu mode will be turned on — we'll guide room placement by direction.</div>}
+        <button style={{ ...s.btn(), marginTop: 18 }} onClick={finishBrief}>This is my brief → Design my plot</button>
+        <button style={s.btn("secondary")} onClick={finishBrief}>Skip priorities</button>
+      </div>
+    </div>
+  );
+
+  if (step === "input") return (
+    <div style={s.root}>
+      <div style={s.header}>{back(() => setStep("brief3"))}<div style={{ flex: 1 }}><div style={{ fontWeight: 900, fontSize: 18 }}>Your Plot</div><div style={{ color: C.muted, fontSize: 12 }}>Phase 2 · your land</div></div></div>
+      <ProgressArc />
+      <div style={s.body}>
+        <div style={{ fontWeight: 800, fontSize: 22, marginBottom: 4 }}>Now, your land</div>
+        <div style={{ color: C.muted, fontSize: 13, marginBottom: 18 }}>Your brief is set. Now lets map the plot your home will sit on.</div>
         <span style={s.label}>Purpose</span>
         <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>{["residential", "commercial"].map(p => <button key={p} style={s.chip(purpose === p)} onClick={() => setPurpose(p)}>{p}</button>)}</div>
         <span style={s.label}>Plot Shape</span>
@@ -1104,7 +1253,7 @@ function Dial({ points, facing, setFacing }) {
         </g>
         <circle cx={cx} cy={cy} r={3} fill={C.muted} />
       </svg>
-      <div style={{ textAlign: "center", marginTop: 8, color: C.muted, fontSize: 12 }}>Drag the dial to point your plot's front (road side)</div>
+      <div style={{ textAlign: "center", marginTop: 8, color: C.muted, fontSize: 12 }}>Drag the dial to point your plot front (road side)</div>
     </div>
   );
 }
