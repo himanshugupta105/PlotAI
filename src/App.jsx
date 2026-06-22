@@ -1,9 +1,11 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 
 const C = {
-  bg: "#F4EDE1", surface: "#EFE6D6", card: "#FBF6EC",
-  accent: "#8B5E34", purple: "#A6794B", green: "#5C7A4A", amber: "#B07A2E",
-  red: "#B0492F", text: "#3A2E22", muted: "#8A7A66", border: "#D9C9B0",
+  bg: "#FFFFFF", surface: "#F7F7F5", card: "#FFFFFF",
+  accent: "#1A1A1A", purple: "#1A1A1A", green: "#2E7D32", amber: "#A67C00",
+  red: "#C0392B", text: "#1A1A1A", muted: "#A0A09A", border: "#EAEAE6",
+  // selection highlight (subtle, distinct from charcoal text)
+  sel: "#1A1A1A", selBg: "#F2F2EF",
 };
 
 const CORE = {
@@ -39,11 +41,12 @@ const ROOMS = {
   cellar:     { label: "Storage Cellar", icon: "🗄️", color: "#8A8FA6", min: 100 },
   hometheatre:{ label: "Home Theatre",   icon: "🎬", color: "#A479E0", min: 150 },
   gym:        { label: "Gym",            icon: "🏋️", color: "#E07A5F", min: 100 },
+  custom:     { label: "Custom Space",   icon: "✏️", color: "#9C7B52", min: 30 },
 };
 
 const RES_GROUND = ["park", "garden", "living", "bed", "kitchen", "bath", "pooja", "store", "utility"];
 const RES_UPPER  = ["living", "master", "bed", "kitchen", "bath", "dining", "balcony", "office", "guest", "pooja", "store", "terrace"];
-const RES_BASEMENT = ["park", "store", "cellar", "hometheatre", "gym", "utility", "servant"];
+const RES_BASEMENT = ["park", "store"];
 const COM_ALL    = ["reception", "office", "cabin", "conference", "bath", "pantry", "store", "park"];
 
 const SUGGEST = {
@@ -231,7 +234,7 @@ function generateLayout(points, facing, style, rooms, cores) {
   // order: cores first (stairs/lift to SW/NW center-ish), then rooms by size desc
   const allBlocks = [];
   cores.forEach(c => allBlocks.push({ ...c, isCore: true }));
-  [...rooms].sort((a, b) => b.sqft - a.sqft).forEach(r => allBlocks.push({ ...ROOMS[r.typeId], typeId: r.typeId, sqft: r.sqft, uid: r.uid }));
+  [...rooms].sort((a, b) => b.sqft - a.sqft).forEach(r => allBlocks.push({ ...ROOMS[r.typeId], typeId: r.typeId, sqft: r.sqft, uid: r.uid, label: r.customLabel || ROOMS[r.typeId].label }));
 
   const placed = [];
   for (const blk of allBlocks) {
@@ -263,6 +266,146 @@ function generateLayout(points, facing, style, rooms, cores) {
     });
   }
   return placed;
+}
+
+// ===== SLICING-TREE LAYOUT ENGINE (Stage 1) =====
+// Recursively subdivides the floor rectangle into perfectly-tiling room rectangles.
+// Every cut is a shared wall. Guarantees no gaps/overlaps + sensible proportions.
+
+// where each room ideally sits, as a normalized (col,row) in 0..2 grid space BEFORE rotation
+// col: 0=West .. 2=East ; row: 0=North .. 2=South  (matches BASE_GRID visual)
+function roomAnchor(typeId, grid) {
+  // find the zone this room most wants, then locate that zone in the (possibly rotated) grid
+  const want = {
+    kitchen: "SE", master: "SW", pooja: "NE", living: "C", bath: "NW",
+    bed: "W", dining: "E", store: "SW", park: "NW", garden: "NE",
+    office: "W", balcony: "NE", guest: "NW", utility: "NW",
+    stairs: "C", lift: "C", court: "C", shaft: "NW",
+  }[typeId] || "C";
+  // locate `want` in the rotated grid -> gives (row,col)
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) {
+    if (grid[r][c] === want) return { col: c, row: r };
+  }
+  return { col: 1, row: 1 };
+}
+
+// recursively slice `rect` among `items` (each {sqft, anchor, ...}). Returns array of {...item, rect}.
+function sliceRooms(rect, items) {
+  if (items.length === 0) return [];
+  if (items.length === 1) return [{ ...items[0], rect: { ...rect } }];
+
+  const totalArea = items.reduce((a, b) => a + b.sqft, 0);
+  // decide split axis: cut along the longer dimension of the rect for better proportions,
+  // but also respect the spread of anchors so Vastu placement is honored.
+  const colSpread = Math.max(...items.map(i => i.anchor.col)) - Math.min(...items.map(i => i.anchor.col));
+  const rowSpread = Math.max(...items.map(i => i.anchor.row)) - Math.min(...items.map(i => i.anchor.row));
+  // prefer cutting the axis with more anchor spread; tie-break by rect shape
+  let cutVertical;
+  if (colSpread !== rowSpread) cutVertical = colSpread > rowSpread;
+  else cutVertical = rect.w >= rect.h;
+
+  // sort items along the cut axis by anchor, then split into two groups by area ~half
+  const sorted = [...items].sort((a, b) => cutVertical ? a.anchor.col - b.anchor.col : a.anchor.row - b.anchor.row);
+  let acc = 0, splitIdx = 1;
+  for (let i = 0; i < sorted.length; i++) {
+    acc += sorted[i].sqft;
+    if (acc >= totalArea / 2) { splitIdx = i + 1; break; }
+  }
+  splitIdx = Math.max(1, Math.min(sorted.length - 1, splitIdx));
+  const groupA = sorted.slice(0, splitIdx);
+  const groupB = sorted.slice(splitIdx);
+  const areaA = groupA.reduce((a, b) => a + b.sqft, 0);
+  const fracA = areaA / totalArea;
+
+  // PROPORTION GUARD: if a cut would make either child too thin relative to its content, flip axis once
+  const childAThin = cutVertical ? (rect.w * fracA) / rect.h < 0.32 : (rect.h * fracA) / rect.w < 0.32;
+  const childBThin = cutVertical ? (rect.w * (1 - fracA)) / rect.h < 0.32 : (rect.h * (1 - fracA)) / rect.w < 0.32;
+  if ((childAThin || childBThin) && items.length > 1) {
+    // re-sort along the other axis and split there
+    const alt = cutVertical ? false : true;
+    const sorted2 = [...items].sort((a, b) => alt ? a.anchor.col - b.anchor.col : a.anchor.row - b.anchor.row);
+    let acc2 = 0, sp2 = 1;
+    for (let i = 0; i < sorted2.length; i++) { acc2 += sorted2[i].sqft; if (acc2 >= totalArea / 2) { sp2 = i + 1; break; } }
+    sp2 = Math.max(1, Math.min(sorted2.length - 1, sp2));
+    const gA = sorted2.slice(0, sp2), gB = sorted2.slice(sp2);
+    const fA = gA.reduce((a, b) => a + b.sqft, 0) / totalArea;
+    if (alt) { // alt vertical
+      const wA = rect.w * fA;
+      return [
+        ...sliceRooms({ x: rect.x, y: rect.y, w: wA, h: rect.h }, gA),
+        ...sliceRooms({ x: rect.x + wA, y: rect.y, w: rect.w - wA, h: rect.h }, gB),
+      ];
+    } else { // alt horizontal (top = high y = North)
+      const hA = rect.h * fA;
+      return [
+        ...sliceRooms({ x: rect.x, y: rect.y + rect.h - hA, w: rect.w, h: hA }, gA),
+        ...sliceRooms({ x: rect.x, y: rect.y, w: rect.w, h: rect.h - hA }, gB),
+      ];
+    }
+  }
+
+  if (cutVertical) {
+    const wA = rect.w * fracA;
+    return [
+      ...sliceRooms({ x: rect.x, y: rect.y, w: wA, h: rect.h }, groupA),
+      ...sliceRooms({ x: rect.x + wA, y: rect.y, w: rect.w - wA, h: rect.h }, groupB),
+    ];
+  } else {
+    // horizontal cut: groupA is North (top, higher y). y grows upward in plot coords.
+    const hA = rect.h * fracA;
+    return [
+      ...sliceRooms({ x: rect.x, y: rect.y + rect.h - hA, w: rect.w, h: hA }, groupA),
+      ...sliceRooms({ x: rect.x, y: rect.y, w: rect.w, h: rect.h - hA }, groupB),
+    ];
+  }
+}
+
+function sliceLayout(points, facing, rooms, cores) {
+  if (!points) return [];
+  const grid = rotatedGrid(facing);
+  const bb = bboxOf(points);
+  const rect = { x: bb.minX, y: bb.minY, w: bb.maxX - bb.minX, h: bb.maxY - bb.minY };
+  // build items: cores + rooms, each with an anchor and area
+  const items = [];
+  cores.forEach(c => items.push({ ...c, typeId: c.id || c.typeId, label: c.label, color: c.color, icon: c.icon, sqft: Math.max(20, c.sqft), anchor: roomAnchor(c.id || c.typeId, grid), isCore: true }));
+  rooms.forEach(r => {
+    const meta = ROOMS[r.typeId];
+    items.push({ ...meta, typeId: r.typeId, sqft: Math.max(20, r.sqft), uid: r.uid, label: r.customLabel || meta.label, color: meta.color, icon: meta.icon, anchor: roomAnchor(r.typeId, grid) });
+  });
+  if (items.length === 0) return [];
+  const sliced = sliceRooms(rect, items);
+  // attach real dimensions (feet) — plot units are already feet in this app
+  return sliced.map(s => ({
+    ...s,
+    px: s.rect.x, py: s.rect.y, pw: s.rect.w, ph: s.rect.h,
+    wFt: Math.round(s.rect.w), hFt: Math.round(s.rect.h),
+  }));
+}
+
+// ===== SLICING-TREE RENDERER (Stage 1: clean tiled rooms) =====
+function SliceView({ points, rooms, facing }) {
+  const W = 340, H = 300, pad = 30;
+  if (!points) return null;
+  const bb = bboxOf(points);
+  const bw = bb.maxX - bb.minX || 1, bh = bb.maxY - bb.minY || 1;
+  const scale = Math.min((W - 2 * pad) / bw, (H - 2 * pad) / bh);
+  const offX = (W - bw * scale) / 2, offY = (H - bh * scale) / 2;
+  const sx = x => (x - bb.minX) * scale + offX;
+  const sy = y => (bb.maxY - y) * scale + offY;
+  return (
+    <svg width={W} height={H} style={{ background: "#fff", borderRadius: 12, border: `1px solid ${C.border}`, display: "block", margin: "0 auto" }}>
+      {rooms.map((r, i) => {
+        const x = sx(r.px), y = sy(r.py + r.ph), w = r.pw * scale, h = r.ph * scale;
+        return (
+          <g key={i}>
+            <rect x={x} y={y} width={w} height={h} fill={(r.color || "#999") + "26"} stroke={r.color || "#666"} strokeWidth={1} />
+            {w > 30 && h > 22 && <text x={x + w / 2} y={y + h / 2 - 2} textAnchor="middle" fontSize={Math.min(13, w / 3)}>{r.icon}</text>}
+            {w > 46 && h > 34 && <text x={x + w / 2} y={y + h / 2 + 11} textAnchor="middle" fontSize={8} fontWeight={600} fill={C.text}>{(r.label || "").split(" ")[0]}</text>}
+          </g>
+        );
+      })}
+    </svg>
+  );
 }
 
 // draw a generated layout (rooms placed in their zones)
@@ -346,7 +489,7 @@ function ShapeView({ points, blocks }) {
           </g>
         );
       })}
-      <polygon points={poly} fill={blocks ? "none" : C.accent + "18"} stroke={C.accent} strokeWidth={2} strokeLinejoin="round" />
+      <polygon points={poly} fill={blocks ? "none" : C.selBg} stroke={C.accent} strokeWidth={2} strokeLinejoin="round" />
       {!blocks && points.map((p, i) => {
         const q = points[(i + 1) % points.length];
         const len = Math.round(Math.hypot(q[0] - p[0], q[1] - p[1]));
@@ -431,6 +574,14 @@ function buildFloorList(hasBasement, floorsCount, topMode) {
 }
 
 // ===== PHASE 1: THE BRIEF =====
+// ===== PROJECT TYPE (what are you building) =====
+const PROJECT_TYPES = [
+  { id: "home",     label: "One Home",      icon: "🏡", desc: "A single home for you or your family" },
+  { id: "villa",    label: "Villa",         icon: "🏛️", desc: "A premium independent luxury home" },
+  { id: "builder",  label: "Builder Floors", icon: "🏢", desc: "Each floor a separate home to sell or rent" },
+  { id: "apartment",label: "Apartments",    icon: "🏬", desc: "Multiple flats on each floor" },
+];
+
 const FAMILY_TYPES = [
   { id: "single", label: "Just me", icon: "🧑", desc: "A home for one" },
   { id: "couple", label: "A couple", icon: "💑", desc: "Two people" },
@@ -443,6 +594,7 @@ const PROGRAM_TEMPLATES = {
   couple: { bedrooms: 2, bathrooms: 2, kitchens: 1, pooja: true,  dining: true,  study: false, guest: false, store: true,  utility: true,  parking: true,  garden: true,  balcony: true },
   family: { bedrooms: 3, bathrooms: 2, kitchens: 1, pooja: true,  dining: true,  study: true,  guest: true,  store: true,  utility: true,  parking: true,  garden: true,  balcony: true },
   joint:  { bedrooms: 4, bathrooms: 3, kitchens: 2, pooja: true,  dining: true,  study: true,  guest: true,  store: true,  utility: true,  parking: true,  garden: true,  balcony: true },
+  villa:  { bedrooms: 4, bathrooms: 4, kitchens: 1, pooja: true,  dining: true,  study: true,  guest: true,  store: true,  utility: true,  parking: true,  garden: true,  balcony: true },
 };
 const PROGRAM_TOGGLES = [
   { id: "pooja",   label: "Pooja Room",  icon: "🪔" },
@@ -471,11 +623,60 @@ const STYLES = [
   { id: "compact",label: "Compact & Efficient", icon: "📐", desc: "Shared walls, low construction cost", premium: true },
 ];
 
+// ===== BRAND LOGO (vector recreation — the P with building silhouette) =====
+function LogoMark({ size = 100, color = "#1A1A1A" }) {
+  return (
+    <svg width={size} height={size * 1.04} viewBox="0 0 100 104" fill="none" style={{ display: "block" }}>
+      {/* P stem */}
+      <rect x="27" y="15" width="12" height="76" fill={color} />
+      {/* P bowl (loop) */}
+      <path d="M 39 15 H 57 A 23 23 0 0 1 57 61 H 39" fill="none" stroke={color} strokeWidth="12" strokeLinejoin="miter" />
+      {/* building silhouette inside the counter */}
+      <path d="M 45 53 L 56 41 L 56 91 L 45 91 Z" fill={color} />
+    </svg>
+  );
+}
+
+function Splash({ fading }) {
+  return (
+    <div style={{
+      position: "fixed", inset: 0, background: "#FFFFFF", zIndex: 9999,
+      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+      opacity: fading ? 0 : 1, transition: "opacity .55s ease",
+      fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif",
+    }}>
+      <style>{"@keyframes plotaiLogoIn{0%{opacity:0;transform:translateY(10px) scale(.92)}100%{opacity:1;transform:translateY(0) scale(1)}}@keyframes plotaiFadeUp{0%{opacity:0;transform:translateY(8px)}100%{opacity:1;transform:translateY(0)}}@keyframes plotaiLine{0%{width:0}100%{width:46px}}"}</style>
+      <div style={{ animation: "plotaiLogoIn 1s cubic-bezier(.2,.7,.2,1) both" }}>
+        <LogoMark size={104} />
+      </div>
+      <div style={{ marginTop: 24, fontSize: 32, fontWeight: 600, letterSpacing: "-0.02em", color: "#1A1A1A", animation: "plotaiFadeUp .8s ease .45s both" }}>Plot AI</div>
+      <div style={{ height: 1, background: "#E5E5E0", margin: "16px 0", animation: "plotaiLine .8s ease .7s both" }} />
+      <div style={{ fontSize: 11, fontWeight: 500, letterSpacing: "0.34em", color: "#9A9A95", textTransform: "uppercase", animation: "plotaiFadeUp .8s ease .85s both" }}>Your AI Architect</div>
+    </div>
+  );
+}
+
 export default function App() {
-  const [step, setStep] = useState("brief1");
+  const [step, setStep] = useState("project");
+  const [projectType, setProjectType] = useState(null);
+  // splash screen
+  const [showSplash, setShowSplash] = useState(true);
+  const [splashFade, setSplashFade] = useState(false);
+  useEffect(() => {
+    const t1 = setTimeout(() => setSplashFade(true), 2100);
+    const t2 = setTimeout(() => setShowSplash(false), 2700);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
+  }, []);
   // PHASE 1 — THE BRIEF
   const [familyType, setFamilyType] = useState(null);
   const [program, setProgram] = useState(PROGRAM_TEMPLATES.family);
+  // BUILDER FLOORS: per-unit program (each floor = one sellable home)
+  const [unitProgram, setUnitProgram] = useState({ bedrooms: 2, bathrooms: 2, pooja: false, balcony: true });
+  const [sameOnEveryFloor, setSameOnEveryFloor] = useState(true);
+  const [floorUnitOverrides, setFloorUnitOverrides] = useState({}); // { floorKey: {bedrooms,bathrooms,...} }
+  // APARTMENTS: flats per floor + size of each flat
+  const [flatsPerFloor, setFlatsPerFloor] = useState(2);
+  const [flatBHK, setFlatBHK] = useState(2); // bedrooms per flat
   const [priorities, setPriorities] = useState([]);
   const [projectName, setProjectName] = useState("");
   const [purpose, setPurpose] = useState("residential");
@@ -502,6 +703,8 @@ export default function App() {
   const [quality, setQuality] = useState("standard");
   const [floorData, setFloorData] = useState([]);
   const [cur, setCur] = useState(0);
+  const [customName, setCustomName] = useState("");
+  const [customSize, setCustomSize] = useState(100);
   const [activeStyle, setActiveStyle] = useState(null);
   const [layoutFloor, setLayoutFloor] = useState(0);
   const [lockMsg, setLockMsg] = useState("");
@@ -523,6 +726,13 @@ export default function App() {
     footprint = Math.round(area * ratio);
   }
   const coreArea = CORE.stairs.min + (liftOn ? CORE.lift.min : 0);
+  // CIRCULATION layer: reserve hallway/movement space (architect's ~10% rule)
+  const CIRCULATION_PCT = 0.10; // ~10% of buildable area for hallways & movement
+  const circulationFor = (roomCount) => {
+    // no circulation needed if the floor has 0-1 rooms (no hallways between rooms)
+    if (roomCount <= 1) return 0;
+    return Math.round((footprint - coreArea) * CIRCULATION_PCT);
+  };
   // surroundings analysis
   const openSidesCount = SIDE_KEYS.filter(k => isOpenSide(surround[k])).length;
   const blockedSides = SIDE_KEYS.filter(k => !isOpenSide(surround[k]));
@@ -547,11 +757,174 @@ export default function App() {
   const startFloors = () => {
     setFloorData(floorList.map(() => ({ fullParking: false, rooms: [] })));
     setCur(0); setStep("floor");
+    // builder floors: auto-build each floor as a complete unit right away
+    if (projectType === "builder" || projectType === "apartment") setTimeout(() => autoDistribute(), 0);
   };
   const addRoom = (typeId) => setFloorData(fd => fd.map((f, i) => i !== cur ? f : { ...f, rooms: [...f.rooms, { uid: UID++, typeId, sqft: ROOMS[typeId].min }] }));
+  const addCustomRoom = () => {
+    const name = customName.trim();
+    if (!name) return;
+    const sqft = Math.max(20, customSize);
+    setFloorData(fd => fd.map((f, i) => i !== cur ? f : { ...f, rooms: [...f.rooms, { uid: UID++, typeId: "custom", sqft, customLabel: name }] }));
+    setCustomName(""); setCustomSize(100);
+  };
   const removeRoom = (uid) => setFloorData(fd => fd.map((f, i) => i !== cur ? f : { ...f, rooms: f.rooms.filter(r => r.uid !== uid) }));
   const setRoomSize = (uid, val) => setFloorData(fd => fd.map((f, i) => i !== cur ? f : { ...f, rooms: f.rooms.map(r => r.uid === uid ? { ...r, sqft: val } : r) }));
   const toggleFP = () => setFloorData(fd => fd.map((f, i) => i !== cur ? f : { ...f, fullParking: !f.fullParking, rooms: [] }));
+
+  // ===== BRIEF → FLOORS: expand the Phase 1 program into a list of rooms to place =====
+  const briefRoomList = () => {
+    const list = [];
+    list.push({ typeId: "living", label: "Living Room" }); // every home has one
+    for (let i = 0; i < program.bedrooms; i++) list.push({ typeId: i === 0 ? "master" : "bed", label: i === 0 ? "Master Bedroom" : "Bedroom" });
+    for (let i = 0; i < program.bathrooms; i++) list.push({ typeId: "bath", label: "Bathroom" });
+    for (let i = 0; i < program.kitchens; i++) list.push({ typeId: "kitchen", label: "Kitchen" });
+    if (program.dining) list.push({ typeId: "dining", label: "Dining" });
+    if (program.pooja) list.push({ typeId: "pooja", label: "Pooja Room" });
+    if (program.study) list.push({ typeId: "office", label: "Study/Office" });
+    if (program.guest) list.push({ typeId: "guest", label: "Guest Room" });
+    if (program.store) list.push({ typeId: "store", label: "Store" });
+    if (program.utility) list.push({ typeId: "utility", label: "Utility/Wash" });
+    if (program.parking) list.push({ typeId: "park", label: "Parking" });
+    if (program.garden) list.push({ typeId: "garden", label: "Front Garden" });
+    if (program.balcony) list.push({ typeId: "balcony", label: "Balcony" });
+    return list;
+  };
+  // how many of each typeId are already placed across all floors
+  const placedCounts = () => {
+    const c = {};
+    floorData.forEach(f => f.rooms.forEach(r => { c[r.typeId] = (c[r.typeId] || 0) + 1; }));
+    return c;
+  };
+  // the unplaced pool = brief list minus already-placed, as countable groups
+  const unplacedPool = () => {
+    const brief = briefRoomList();
+    const placed = placedCounts();
+    const remaining = {};
+    const order = [];
+    brief.forEach(item => {
+      remaining[item.typeId] = (remaining[item.typeId] || 0) + 1;
+      if (!order.includes(item.typeId)) order.push(item.typeId);
+    });
+    Object.keys(placed).forEach(t => { if (remaining[t]) remaining[t] = Math.max(0, remaining[t] - placed[t]); });
+    return order.map(t => ({ typeId: t, count: remaining[t] || 0, label: ROOMS[t]?.label || t })).filter(x => x.count > 0);
+  };
+  const totalUnplaced = () => unplacedPool().reduce((a, x) => a + x.count, 0);
+
+  // auto-distribute the whole brief across floors sensibly
+  const autoDistribute = () => {
+    // BUILDER FLOORS: each floor becomes a complete independent unit
+    // APARTMENTS: each floor splits into N self-contained flats
+    if (projectType === "apartment") {
+      const fresh = floorList.map((f) => {
+        if (f.kind === "basement") return { fullParking: true, rooms: [] };
+        if (f.kind === "terrace") return { fullParking: false, rooms: [] };
+        const rooms = [];
+        for (let flat = 1; flat <= flatsPerFloor; flat++) {
+          // each flat: living + kitchen + bedrooms + 1 bath
+          rooms.push({ uid: UID++, typeId: "living", sqft: ROOMS.living.min, customLabel: `Flat ${flat} · Living` });
+          rooms.push({ uid: UID++, typeId: "kitchen", sqft: ROOMS.kitchen.min, customLabel: `Flat ${flat} · Kitchen` });
+          for (let b = 0; b < flatBHK; b++) rooms.push({ uid: UID++, typeId: b === 0 ? "master" : "bed", sqft: ROOMS[b === 0 ? "master" : "bed"].min, customLabel: `Flat ${flat} · ${b === 0 ? "Master" : "Bedroom"}` });
+          rooms.push({ uid: UID++, typeId: "bath", sqft: ROOMS.bath.min, customLabel: `Flat ${flat} · Bath` });
+        }
+        // grow to fill ~90% of the floor (corridor takes the rest)
+        const target = (footprint - coreArea) * 0.90;
+        const cur = rooms.reduce((a, r) => a + r.sqft, 0);
+        if (cur > 0 && target > cur) {
+          const scale = target / cur;
+          rooms.forEach(r => { r.sqft = Math.round((r.sqft * scale) / 5) * 5; });
+        }
+        return { fullParking: false, rooms };
+      });
+      setFloorData(fresh);
+      return;
+    }
+    if (projectType === "builder") {
+      const fresh = floorList.map((f) => {
+        if (f.kind === "basement") return { fullParking: true, rooms: [] }; // basement = shared parking
+        if (f.kind === "terrace") return { fullParking: false, rooms: [] };
+        // per-floor unit program (override or the common one)
+        const u = floorUnitOverrides[f.key] || unitProgram;
+        const unitRooms = [];
+        unitRooms.push({ uid: UID++, typeId: "living", sqft: ROOMS.living.min });
+        unitRooms.push({ uid: UID++, typeId: "kitchen", sqft: ROOMS.kitchen.min });
+        for (let i = 0; i < u.bedrooms; i++) unitRooms.push({ uid: UID++, typeId: i === 0 ? "master" : "bed", sqft: ROOMS[i === 0 ? "master" : "bed"].min });
+        for (let i = 0; i < u.bathrooms; i++) unitRooms.push({ uid: UID++, typeId: "bath", sqft: ROOMS.bath.min });
+        if (u.pooja) unitRooms.push({ uid: UID++, typeId: "pooja", sqft: ROOMS.pooja.min });
+        if (u.balcony) unitRooms.push({ uid: UID++, typeId: "balcony", sqft: ROOMS.balcony.min });
+        // grow to fill the floor, leaving circulation (hallway) space
+        const circ = circulationFor(unitRooms.length);
+        const target = (footprint - coreArea - circ) * 0.98;
+        const cur = unitRooms.reduce((a, r) => a + r.sqft, 0);
+        if (cur > 0 && target > cur) {
+          const scale = target / cur;
+          unitRooms.forEach(r => { r.sqft = Math.round((r.sqft * scale) / 5) * 5; });
+        }
+        return { fullParking: false, rooms: unitRooms };
+      });
+      setFloorData(fresh);
+      return;
+    }
+    const brief = briefRoomList();
+    const fresh = floorList.map(() => ({ fullParking: false, rooms: [] }));
+    const idxOf = (key) => floorList.findIndex(f => f.key === key);
+    const groundIdx = idxOf("f0") >= 0 ? idxOf("f0") : floorList.findIndex(f => f.kind !== "basement" && f.kind !== "terrace");
+    const basementIdx = idxOf("basement");
+    // floors that can take living rooms (not basement, not terrace)
+    const livingIdxs = floorList.map((f, i) => i).filter(i => floorList[i].kind !== "basement" && floorList[i].kind !== "terrace");
+    const upperIdxs = livingIdxs.filter(i => i !== groundIdx);
+    const groundPref = new Set(["living", "kitchen", "dining", "pooja", "garden", "master"]);
+
+    const tryPlace = (typeId, idx, sqft) => {
+      const used = coreArea + fresh[idx].rooms.reduce((a, r) => a + r.sqft, 0);
+      if (used + sqft <= footprint) { fresh[idx].rooms.push({ uid: UID++, typeId, sqft }); return true; }
+      return false;
+    };
+
+    let upPtr = 0;
+    brief.forEach(item => {
+      const min = ROOMS[item.typeId]?.min || 60;
+      // PARKING and STORE prefer the basement if one exists
+      if ((item.typeId === "park" || item.typeId === "store") && basementIdx >= 0) {
+        if (tryPlace(item.typeId, basementIdx, min)) return;
+      }
+      // bedrooms and non-ground types go upstairs
+      let target = groundIdx;
+      if ((item.typeId === "bed" || !groundPref.has(item.typeId)) && upperIdxs.length > 0) {
+        target = upperIdxs[upPtr % upperIdxs.length]; upPtr++;
+      }
+      if (tryPlace(item.typeId, target, min)) return;
+      // fallback: any living floor with room
+      for (const k of livingIdxs) if (tryPlace(item.typeId, k, min)) return;
+      // last resort: basement
+      if (basementIdx >= 0) tryPlace(item.typeId, basementIdx, min);
+    });
+
+    // BASEMENT: if it has parking, grow parking to fill the basement (~95%)
+    if (basementIdx >= 0) {
+      const b = fresh[basementIdx];
+      if (b.rooms.length === 0) {
+        // empty basement -> fill with parking
+        b.rooms.push({ uid: UID++, typeId: "park", sqft: Math.max(ROOMS.park.min, Math.round((footprint - coreArea) * 0.95)) });
+      }
+    }
+
+    // GROW every floor's rooms proportionally to fill ~92% of buildable area
+    fresh.forEach((f, i) => {
+      if (floorList[i].kind === "terrace") return;
+      if (f.rooms.length === 0) return;
+      const circ = circulationFor(f.rooms.length);
+      const target = (footprint - coreArea - circ) * 0.98;
+      const current = f.rooms.reduce((a, r) => a + r.sqft, 0);
+      if (current <= 0) return;
+      const scale = target / current;
+      if (scale > 1) {
+        f.rooms = f.rooms.map(r => ({ ...r, sqft: Math.round((r.sqft * scale) / 5) * 5 }));
+      }
+    });
+
+    setFloorData(fresh);
+  };
 
   const paletteFor = (kind) => {
     if (purpose === "commercial") return COM_ALL;
@@ -585,18 +958,18 @@ export default function App() {
   };
 
   const s = {
-    root: { fontFamily: "'Inter', -apple-system, sans-serif", background: C.bg, minHeight: "100vh", color: C.text, maxWidth: 430, margin: "0 auto", paddingBottom: 40 },
-    header: { background: C.surface, padding: "16px 20px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", gap: 10 },
-    logo: { width: 36, height: 36, borderRadius: 10, background: `linear-gradient(135deg, ${C.accent}, ${C.purple})`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 },
-    body: { padding: "18px 16px" },
-    label: { color: C.muted, fontSize: 12, fontWeight: 600, marginBottom: 6, display: "block" },
-    input: { width: "100%", background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 10, color: C.text, fontSize: 15, padding: "10px 14px", outline: "none", boxSizing: "border-box" },
-    btn: (v = "primary") => ({ width: "100%", padding: "14px 0", borderRadius: 12, border: "none", fontWeight: 800, fontSize: 15, cursor: "pointer", background: v === "primary" ? `linear-gradient(135deg, ${C.accent}, ${C.purple})` : C.card, color: v === "primary" ? "#fff" : C.muted, marginTop: 8 }),
-    chip: (a) => ({ flex: 1, padding: "9px 4px", borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: "pointer", border: `1.5px solid ${a ? C.accent : C.border}`, background: a ? C.accent + "22" : "transparent", color: a ? C.accent : C.muted, textTransform: "capitalize" }),
+    root: { fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif", background: C.bg, minHeight: "100vh", color: C.text, maxWidth: 440, margin: "0 auto", paddingBottom: 56, letterSpacing: "-0.01em" },
+    header: { background: C.bg, padding: "20px 24px 14px", display: "flex", alignItems: "center", gap: 12 },
+    logo: { width: 34, height: 34, borderRadius: 9, background: C.accent, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 },
+    body: { padding: "8px 24px" },
+    label: { color: C.muted, fontSize: 11, fontWeight: 600, marginBottom: 8, display: "block", textTransform: "uppercase", letterSpacing: "0.06em" },
+    input: { width: "100%", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, color: C.text, fontSize: 15, padding: "13px 16px", outline: "none", boxSizing: "border-box", fontWeight: 500 },
+    btn: (v = "primary") => ({ width: "100%", padding: "16px 0", borderRadius: 14, border: v === "primary" ? "none" : `1px solid ${C.border}`, fontWeight: 600, fontSize: 15, cursor: "pointer", background: v === "primary" ? C.accent : "transparent", color: v === "primary" ? "#fff" : C.muted, marginTop: 10, letterSpacing: "-0.01em", transition: "opacity .15s" }),
+    chip: (a) => ({ flex: 1, padding: "12px 6px", borderRadius: 11, fontSize: 13.5, fontWeight: 600, cursor: "pointer", border: `1px solid ${a ? C.accent : C.border}`, background: a ? C.accent : "transparent", color: a ? "#fff" : C.text, textTransform: "capitalize", transition: "all .15s" }),
   };
   const field = (label, val, set) => (<div style={{ flex: 1 }}><span style={s.label}>{label}</span><input style={s.input} type="number" value={val} onChange={e => set(+e.target.value)} /></div>);
-  const back = (fn) => <button onClick={fn} style={{ background: "none", border: "none", color: C.muted, cursor: "pointer", fontSize: 20 }}>←</button>;
-  const toggle = (on) => (<div style={{ width: 44, height: 26, borderRadius: 20, background: on ? C.purple : C.border, position: "relative" }}><div style={{ width: 20, height: 20, borderRadius: "50%", background: "#fff", position: "absolute", top: 3, left: on ? 21 : 3, transition: "all .2s" }} /></div>);
+  const back = (fn) => <button onClick={fn} style={{ background: "none", border: "none", color: C.text, cursor: "pointer", fontSize: 22, padding: 0, lineHeight: 1, fontWeight: 300 }}>←</button>;
+  const toggle = (on) => (<div style={{ width: 46, height: 28, borderRadius: 20, background: on ? C.accent : C.border, position: "relative", transition: "background .2s", flexShrink: 0 }}><div style={{ width: 22, height: 22, borderRadius: "50%", background: "#fff", position: "absolute", top: 3, left: on ? 21 : 3, transition: "left .2s", boxShadow: "0 1px 3px rgba(0,0,0,.15)" }} /></div>);
 
   // ===== 4-PHASE PROGRESS ARC =====
   // maps each step to one of the four architect phases
@@ -607,10 +980,19 @@ export default function App() {
     { id: 4, label: "Design", icon: "✨" },
   ];
   const STEP_PHASE = {
-    brief1: 1, brief2: 1, brief3: 1,
+    project: 1, brief1: 1, brief2: 1, brief3: 1, builderUnit: 1, aptSetup: 1,
     input: 2, config: 3, vertical: 3, surround: 2, direction: 2, floor: 3, style: 4, summary: 4,
   };
   const currentPhase = STEP_PHASE[step] || 1;
+  // consistent wording per project type
+  const projLabel = projectType === "villa" ? "villa" : projectType === "builder" ? "builder floors" : projectType === "apartment" ? "apartment building" : "home";
+  const projNoun = projectType === "apartment" ? "building" : projectType === "builder" ? "building" : "home";
+  const ProjectPill = () => projectType ? (
+    <div style={{ display: "inline-flex", alignItems: "center", gap: 6, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 20, padding: "5px 12px", fontSize: 11.5, fontWeight: 600, color: C.muted, marginBottom: 14 }}>
+      <span>{PROJECT_TYPES.find(p => p.id === projectType)?.icon}</span>
+      <span style={{ color: C.text }}>{PROJECT_TYPES.find(p => p.id === projectType)?.label}</span>
+    </div>
+  ) : null;
   const ProgressArc = () => (
     <div style={{ display: "flex", alignItems: "center", padding: "10px 16px 4px", maxWidth: 430, margin: "0 auto" }}>
       {PHASES.map((p, i) => {
@@ -622,7 +1004,7 @@ export default function App() {
               <div style={{
                 width: 26, height: 26, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
                 fontSize: 12, fontWeight: 800, flexShrink: 0,
-                background: active ? `linear-gradient(135deg, ${C.accent}, ${C.purple})` : done ? C.green + "26" : C.card,
+                background: active ? C.accent : done ? C.green + "22" : C.card,
                 border: `1.5px solid ${active ? C.accent : done ? C.green : C.border}`,
                 color: active ? "#fff" : done ? C.green : C.muted,
               }}>{done ? "✓" : p.id}</div>
@@ -639,6 +1021,24 @@ export default function App() {
 
   // PAGE 1
   // ===== PHASE 1 HANDLERS =====
+  const pickProject = (id) => {
+    setProjectType(id);
+    if (id === "villa") {
+      // Villa: premium home, pre-fill larger program and premium finish
+      setFamilyType("villa");
+      setProgram(PROGRAM_TEMPLATES.villa);
+      setQuality("premium");
+      setStep("brief2");
+    } else if (id === "home") {
+      setStep("brief1"); // ask who lives here, then program
+    } else if (id === "builder") {
+      // Builder Floors: each floor is its own unit — set the per-unit program
+      setStep("builderUnit");
+    } else {
+      // Apartments: multiple flats per floor — set flats and size
+      setStep("aptSetup");
+    }
+  };
   const pickFamily = (id) => {
     setFamilyType(id);
     setProgram(PROGRAM_TEMPLATES[id]);
@@ -660,23 +1060,145 @@ export default function App() {
   };
 
   // PHASE 1 — SCREEN 1: WHO IS THIS FOR
-  if (step === "brief1") return (
+  // SPLASH: show animated logo on launch, then reveal the app
+  if (showSplash) return <Splash fading={splashFade} />;
+
+  // PHASE 1 — SCREEN 0: WHAT ARE YOU BUILDING
+  if (step === "project") return (
     <div style={s.root}>
-      <div style={s.header}><div style={s.logo}>🏗️</div><div><div style={{ fontWeight: 900, fontSize: 20 }}>PlotAI</div><div style={{ color: C.muted, fontSize: 12 }}>Your AI Architect</div></div></div>
+      <div style={s.header}><div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 34 }}><LogoMark size={30} /></div><div><div style={{ fontWeight: 700, fontSize: 19, letterSpacing: "-0.02em" }}>Plot AI</div><div style={{ color: C.muted, fontSize: 12 }}>Your AI Architect</div></div></div>
       <ProgressArc />
       <div style={s.body}>
-        <div style={{ fontWeight: 800, fontSize: 22, marginBottom: 4 }}>Lets design your home</div>
-        <div style={{ color: C.muted, fontSize: 13, marginBottom: 20, lineHeight: 1.5 }}>Like a real architect, we'll start with your life — not numbers. First: who will live here?</div>
+        <div style={{ fontWeight: 800, fontSize: 27, marginBottom: 6, letterSpacing: "-0.03em", lineHeight: 1.15 }}>What are you building?</div>
+        <div style={{ color: C.muted, fontSize: 13, marginBottom: 20, lineHeight: 1.5 }}>Every architect starts here. Your answer shapes the whole design — a home for yourself works very differently from floors you plan to sell.</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          {PROJECT_TYPES.map(pt => (
+            <div key={pt.id} onClick={() => pickProject(pt.id)} style={{ background: projectType === pt.id ? C.selBg : C.card, border: `1.5px solid ${projectType === pt.id ? C.accent : C.border}`, borderRadius: 14, padding: "18px 14px", cursor: "pointer", textAlign: "center" }}>
+              <div style={{ fontSize: 32 }}>{pt.icon}</div>
+              <div style={{ fontWeight: 700, fontSize: 14, marginTop: 8 }}>{pt.label}</div>
+              <div style={{ color: C.muted, fontSize: 10.5, marginTop: 3, lineHeight: 1.4 }}>{pt.desc}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{ color: C.muted, fontSize: 11.5, marginTop: 18, textAlign: "center", lineHeight: 1.5 }}>Tap one to begin designing.</div>
+      </div>
+    </div>
+  );
+
+  // PHASE 1 — BUILDER FLOORS: per-unit program
+  if (step === "builderUnit") {
+    const setU = (key, val) => setUnitProgram(u => ({ ...u, [key]: val }));
+    const stepU = (key, d, min, max) => setUnitProgram(u => ({ ...u, [key]: Math.max(min, Math.min(max, u[key] + d)) }));
+    const bhkLabel = `${unitProgram.bedrooms}BHK`;
+    return (
+      <div style={s.root}>
+        <div style={s.header}>{back(() => setStep("project"))}<div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 17, letterSpacing: "-0.02em" }}>Builder Floors</div><div style={{ color: C.muted, fontSize: 12 }}>Phase 1 · each floor a separate home</div></div></div>
+        <ProgressArc />
+        <div style={s.body}>
+          <div style={{ fontWeight: 800, fontSize: 27, marginBottom: 6, letterSpacing: "-0.03em", lineHeight: 1.15 }}>What is each floor?</div>
+          <div style={{ color: C.muted, fontSize: 13, marginBottom: 22, lineHeight: 1.5 }}>Each floor will be a complete independent home — its own kitchen, entrance and rooms — to sell or rent. Set the unit that repeats on every floor.</div>
+
+          <div style={{ background: C.surface, borderRadius: 16, padding: 20, marginBottom: 18, textAlign: "center", border: `1px solid ${C.border}` }}>
+            <div style={{ color: C.muted, fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>Each unit</div>
+            <div style={{ fontWeight: 800, fontSize: 38, letterSpacing: "-0.03em", margin: "4px 0" }}>{bhkLabel}</div>
+            <div style={{ color: C.muted, fontSize: 12 }}>{unitProgram.bedrooms} bed · {unitProgram.bathrooms} bath · kitchen · living</div>
+          </div>
+
+          {[["bedrooms", "Bedrooms per unit", 1, 5], ["bathrooms", "Bathrooms per unit", 1, 4]].map(([key, label, min, max]) => (
+            <div key={key} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, background: C.card, borderRadius: 12, padding: "14px 16px", border: `1px solid ${C.border}` }}>
+              <span style={{ flex: 1, fontWeight: 600, fontSize: 14 }}>{label}</span>
+              <button onClick={() => stepU(key, -1, min, max)} style={{ width: 34, height: 34, borderRadius: 9, border: `1px solid ${C.border}`, background: C.surface, color: C.text, cursor: "pointer", fontSize: 18, fontWeight: 700 }}>−</button>
+              <span style={{ width: 32, textAlign: "center", fontWeight: 800, fontSize: 17 }}>{unitProgram[key]}</span>
+              <button onClick={() => stepU(key, 1, min, max)} style={{ width: 34, height: 34, borderRadius: 9, border: `1px solid ${C.border}`, background: C.surface, color: C.text, cursor: "pointer", fontSize: 18, fontWeight: 700 }}>+</button>
+            </div>
+          ))}
+
+          <div style={{ fontWeight: 700, fontSize: 13, margin: "16px 0 8px" }}>Each unit also includes</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+            {[["pooja", "Pooja Room", "🪔"], ["balcony", "Balcony", "🌅"]].map(([key, label, icon]) => {
+              const on = unitProgram[key];
+              return (
+                <div key={key} onClick={() => setU(key, !on)} style={{ display: "flex", alignItems: "center", gap: 8, background: on ? C.selBg : C.card, border: `1px solid ${on ? C.accent : C.border}`, borderRadius: 11, padding: "12px 14px", cursor: "pointer" }}>
+                  <span style={{ fontSize: 16 }}>{icon}</span><span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>{label}</span>{toggle(on)}
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ color: C.muted, fontSize: 11.5, marginTop: 4, marginBottom: 18, lineHeight: 1.5 }}>Kitchen, living room and entrance are included in every unit automatically — each floor is a full home.</div>
+
+          <div onClick={() => setSameOnEveryFloor(v => !v)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: sameOnEveryFloor ? C.selBg : C.card, borderRadius: 12, padding: "14px 16px", marginBottom: 18, border: `1px solid ${sameOnEveryFloor ? C.accent : C.border}`, cursor: "pointer" }}>
+            <div><div style={{ fontWeight: 700, fontSize: 14 }}>Same unit on every floor</div><div style={{ color: C.muted, fontSize: 12 }}>{sameOnEveryFloor ? "All floors identical (recommended)" : "You can customize each floor later"}</div></div>
+            {toggle(sameOnEveryFloor)}
+          </div>
+
+          <button style={s.btn()} onClick={() => { setProgram({ ...PROGRAM_TEMPLATES.family, bedrooms: unitProgram.bedrooms, bathrooms: unitProgram.bathrooms, kitchens: 1, pooja: unitProgram.pooja, balcony: unitProgram.balcony }); setStep("input"); }}>Continue → Your Plot</button>
+        </div>
+      </div>
+    );
+  }
+
+  // PHASE 1 — APARTMENTS: flats per floor + flat size
+  if (step === "aptSetup") {
+    const bhkName = `${flatBHK}BHK`;
+    return (
+      <div style={s.root}>
+        <div style={s.header}>{back(() => setStep("project"))}<div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 17, letterSpacing: "-0.02em" }}>Apartments</div><div style={{ color: C.muted, fontSize: 12 }}>Phase 1 · multiple flats per floor</div></div></div>
+        <ProgressArc />
+        <div style={s.body}>
+          <div style={{ fontWeight: 800, fontSize: 27, marginBottom: 6, letterSpacing: "-0.03em", lineHeight: 1.15 }}>How are the flats arranged?</div>
+          <div style={{ color: C.muted, fontSize: 13, marginBottom: 22, lineHeight: 1.5 }}>Each floor will be divided into separate flats, each a self-contained home sharing a common corridor and staircase.</div>
+
+          <span style={s.label}>Flats on each floor</span>
+          <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+            {[2, 3, 4].map(n => (
+              <div key={n} onClick={() => setFlatsPerFloor(n)} style={{ flex: 1, textAlign: "center", padding: "16px 0", borderRadius: 12, border: `1.5px solid ${flatsPerFloor === n ? C.accent : C.border}`, background: flatsPerFloor === n ? C.selBg : C.card, cursor: "pointer" }}>
+                <div style={{ fontWeight: 800, fontSize: 24, letterSpacing: "-0.02em" }}>{n}</div>
+                <div style={{ color: C.muted, fontSize: 11 }}>flats</div>
+              </div>
+            ))}
+          </div>
+
+          <span style={s.label}>Size of each flat</span>
+          <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+            {[1, 2, 3].map(n => (
+              <div key={n} onClick={() => setFlatBHK(n)} style={{ flex: 1, textAlign: "center", padding: "14px 0", borderRadius: 12, border: `1.5px solid ${flatBHK === n ? C.accent : C.border}`, background: flatBHK === n ? C.selBg : C.card, cursor: "pointer" }}>
+                <div style={{ fontWeight: 800, fontSize: 18, letterSpacing: "-0.02em" }}>{n}BHK</div>
+                <div style={{ color: C.muted, fontSize: 10.5, marginTop: 2 }}>{n} bed{n > 1 ? "s" : ""}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ background: C.surface, borderRadius: 16, padding: 18, marginBottom: 20, textAlign: "center", border: `1px solid ${C.border}` }}>
+            <div style={{ color: C.muted, fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em" }}>Each floor</div>
+            <div style={{ fontWeight: 800, fontSize: 26, letterSpacing: "-0.03em", margin: "4px 0" }}>{flatsPerFloor} × {bhkName}</div>
+            <div style={{ color: C.muted, fontSize: 12 }}>{flatsPerFloor} flats, each with kitchen, bath & {flatBHK} bedroom{flatBHK > 1 ? "s" : ""}</div>
+          </div>
+
+          <div style={{ color: C.muted, fontSize: 11.5, marginBottom: 18, lineHeight: 1.5 }}>You will set how many floors next. Total flats = {flatsPerFloor} per floor × your number of floors.</div>
+
+          <button style={s.btn()} onClick={() => setStep("input")}>Continue → Your Plot</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (step === "brief1") return (
+    <div style={s.root}>
+      <div style={s.header}>{back(() => setStep("project"))}<div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 17, letterSpacing: "-0.02em" }}>{PROJECT_TYPES.find(p => p.id === projectType)?.label || "The Brief"}</div><div style={{ color: C.muted, fontSize: 12 }}>Phase 1 · the brief</div></div></div>
+      <ProgressArc />
+      <div style={s.body}>
+        <div style={{ fontWeight: 800, fontSize: 27, marginBottom: 6, letterSpacing: "-0.03em", lineHeight: 1.15 }}>{projectType === "builder" || projectType === "apartment" ? "Who will live in each unit?" : "Who is it for?"}</div>
+        <div style={{ color: C.muted, fontSize: 13, marginBottom: 20, lineHeight: 1.5 }}>{projectType === "builder" || projectType === "apartment" ? "This sets the program for each home you will build to sell or rent." : "A real architect starts with the people, not the numbers."}</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
           {FAMILY_TYPES.map(ft => (
-            <div key={ft.id} onClick={() => pickFamily(ft.id)} style={{ background: familyType === ft.id ? C.accent + "22" : C.card, border: `1.5px solid ${familyType === ft.id ? C.accent : C.border}`, borderRadius: 14, padding: "18px 14px", cursor: "pointer", textAlign: "center" }}>
+            <div key={ft.id} onClick={() => pickFamily(ft.id)} style={{ background: familyType === ft.id ? C.selBg : C.card, border: `1.5px solid ${familyType === ft.id ? C.accent : C.border}`, borderRadius: 14, padding: "18px 14px", cursor: "pointer", textAlign: "center" }}>
               <div style={{ fontSize: 32 }}>{ft.icon}</div>
               <div style={{ fontWeight: 700, fontSize: 14, marginTop: 8 }}>{ft.label}</div>
               <div style={{ color: C.muted, fontSize: 11, marginTop: 2 }}>{ft.desc}</div>
             </div>
           ))}
         </div>
-        <div style={{ color: C.muted, fontSize: 11.5, marginTop: 18, textAlign: "center", lineHeight: 1.5 }}>Tap one to continue — we'll suggest the right rooms for you, which you can change.</div>
+        <div style={{ color: C.muted, fontSize: 11.5, marginTop: 18, textAlign: "center", lineHeight: 1.5 }}>Tap one to continue — we will suggest the right rooms, which you can change.</div>
       </div>
     </div>
   );
@@ -684,7 +1206,7 @@ export default function App() {
   // PHASE 1 — SCREEN 2: ROOM PROGRAM
   if (step === "brief2") return (
     <div style={s.root}>
-      <div style={s.header}>{back(() => setStep("brief1"))}<div style={{ flex: 1 }}><div style={{ fontWeight: 900, fontSize: 18 }}>What your home needs</div><div style={{ color: C.muted, fontSize: 12 }}>Your room program</div></div></div>
+      <div style={s.header}>{back(() => setStep(projectType === "villa" ? "project" : "brief1"))}<div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 17, letterSpacing: "-0.02em" }}>What your home needs</div><div style={{ color: C.muted, fontSize: 12 }}>{projectType === "villa" ? "Your villa program" : "Your room program"}</div></div></div>
       <ProgressArc />
       <div style={s.body}>
         <div style={{ color: C.muted, fontSize: 12.5, marginBottom: 16, lineHeight: 1.5 }}>We have suggested rooms for a {FAMILY_TYPES.find(f => f.id === familyType)?.label.toLowerCase()}. Adjust anything to fit your life.</div>
@@ -704,7 +1226,7 @@ export default function App() {
           {PROGRAM_TOGGLES.map(t => {
             const on = program[t.id];
             return (
-              <div key={t.id} onClick={() => toggleProg(t.id)} style={{ background: on ? C.accent + "22" : C.card, border: `1.5px solid ${on ? C.accent : C.border}`, borderRadius: 10, padding: "10px 6px", cursor: "pointer", textAlign: "center" }}>
+              <div key={t.id} onClick={() => toggleProg(t.id)} style={{ background: on ? C.selBg : C.card, border: `1.5px solid ${on ? C.accent : C.border}`, borderRadius: 10, padding: "10px 6px", cursor: "pointer", textAlign: "center" }}>
                 <div style={{ fontSize: 20 }}>{t.icon}</div>
                 <div style={{ fontSize: 10.5, fontWeight: 600, marginTop: 4, color: on ? C.text : C.muted }}>{t.label}</div>
               </div>
@@ -725,36 +1247,37 @@ export default function App() {
   // PHASE 1 — SCREEN 3: PRIORITIES
   if (step === "brief3") return (
     <div style={s.root}>
-      <div style={s.header}>{back(() => setStep("brief2"))}<div style={{ flex: 1 }}><div style={{ fontWeight: 900, fontSize: 18 }}>What matters most</div><div style={{ color: C.muted, fontSize: 12 }}>Pick up to 3 — shapes your design</div></div></div>
+      <div style={s.header}>{back(() => setStep("brief2"))}<div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 17, letterSpacing: "-0.02em" }}>What matters most</div><div style={{ color: C.muted, fontSize: 12 }}>Pick up to 3 — shapes your design</div></div></div>
       <ProgressArc />
       <div style={s.body}>
-        <div style={{ color: C.muted, fontSize: 12.5, marginBottom: 16, lineHeight: 1.5 }}>An architect designs around what you value most. Choose up to three — we'll optimize your layout for them. ({priorities.length}/3)</div>
+        <div style={{ color: C.muted, fontSize: 12.5, marginBottom: 16, lineHeight: 1.5 }}>An architect designs around what you value most. Choose up to three — we will tune your layout for them. ({priorities.length}/3)</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
           {PRIORITIES.map(pr => {
             const on = priorities.includes(pr.id);
             const dim = !on && priorities.length >= 3;
             return (
-              <div key={pr.id} onClick={() => togglePriority(pr.id)} style={{ background: on ? C.accent + "22" : C.card, border: `1.5px solid ${on ? C.accent : C.border}`, borderRadius: 14, padding: "16px 12px", cursor: dim ? "not-allowed" : "pointer", textAlign: "center", opacity: dim ? 0.45 : 1 }}>
+              <div key={pr.id} onClick={() => togglePriority(pr.id)} style={{ background: on ? C.selBg : C.card, border: `1.5px solid ${on ? C.accent : C.border}`, borderRadius: 14, padding: "16px 12px", cursor: dim ? "not-allowed" : "pointer", textAlign: "center", opacity: dim ? 0.45 : 1 }}>
                 <div style={{ fontSize: 26 }}>{pr.icon}</div>
                 <div style={{ fontWeight: 700, fontSize: 13, marginTop: 6, color: on ? C.text : C.muted }}>{pr.label}</div>
               </div>
             );
           })}
         </div>
-        {priorities.includes("vastu") && <div style={{ background: C.purple + "18", border: `1px solid ${C.purple}55`, borderRadius: 10, padding: 12, marginTop: 14, fontSize: 12, color: C.purple, lineHeight: 1.5 }}>🧭 Vastu mode will be turned on — we'll guide room placement by direction.</div>}
-        <button style={{ ...s.btn(), marginTop: 18 }} onClick={finishBrief}>This is my brief → Design my plot</button>
-        <button style={s.btn("secondary")} onClick={finishBrief}>Skip priorities</button>
+        {priorities.includes("vastu") && <div style={{ background: C.selBg, border: `1px solid ${C.purple}55`, borderRadius: 10, padding: 12, marginTop: 14, fontSize: 12, color: C.purple, lineHeight: 1.5 }}>🧭 Vastu mode will be turned on — we will guide room placement by direction.</div>}
+        <button style={{ ...s.btn(), marginTop: 18 }} onClick={finishBrief}>Continue → Your Plot</button>
+        <button style={s.btn("secondary")} onClick={finishBrief}>Skip for now</button>
       </div>
     </div>
   );
 
   if (step === "input") return (
     <div style={s.root}>
-      <div style={s.header}>{back(() => setStep("brief3"))}<div style={{ flex: 1 }}><div style={{ fontWeight: 900, fontSize: 18 }}>Your Plot</div><div style={{ color: C.muted, fontSize: 12 }}>Phase 2 · your land</div></div></div>
+      <div style={s.header}>{back(() => setStep("brief3"))}<div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 17, letterSpacing: "-0.02em" }}>Your Plot</div><div style={{ color: C.muted, fontSize: 12 }}>Phase 2 · your land</div></div></div>
       <ProgressArc />
       <div style={s.body}>
-        <div style={{ fontWeight: 800, fontSize: 22, marginBottom: 4 }}>Now, your land</div>
-        <div style={{ color: C.muted, fontSize: 13, marginBottom: 18 }}>Your brief is set. Now lets map the plot your home will sit on.</div>
+        <ProjectPill />
+        <div style={{ fontWeight: 800, fontSize: 27, marginBottom: 6, letterSpacing: "-0.03em", lineHeight: 1.15 }}>Now, your land</div>
+        <div style={{ color: C.muted, fontSize: 13, marginBottom: 18 }}>Your brief is set. Let us map the plot your {projNoun} will sit on.</div>
         <span style={s.label}>Purpose</span>
         <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>{["residential", "commercial"].map(p => <button key={p} style={s.chip(purpose === p)} onClick={() => setPurpose(p)}>{p}</button>)}</div>
         <span style={s.label}>Plot Shape</span>
@@ -773,7 +1296,7 @@ export default function App() {
         <div style={{ marginBottom: 16 }}><ShapeView points={points} /></div>
         <div style={{ background: C.card, borderRadius: 14, padding: 14, marginBottom: 18, border: `1px solid ${C.border}`, textAlign: "center" }}>
           <div style={{ color: C.muted, fontSize: 12 }}>Plot Area</div>
-          <div style={{ color: C.accent, fontWeight: 900, fontSize: 26 }}>{area.toLocaleString()} sqft</div>
+          <div style={{ color: C.accent, fontWeight: 800, fontSize: 32, letterSpacing: "-0.03em" }}>{area.toLocaleString()} sqft</div>
           <div style={{ color: C.muted, fontSize: 11.5, marginTop: 2 }}>{(area / 9).toFixed(0)} gaj · {(area * 0.0929).toFixed(0)} m² · {(area / 435.6).toFixed(2)} cents</div>
         </div>
         <button style={s.btn()} onClick={() => area > 0 && setStep("config")}>Continue → Floors & Setbacks</button>
@@ -784,10 +1307,10 @@ export default function App() {
   // PAGE 2
   if (step === "config") return (
     <div style={s.root}>
-      <div style={s.header}>{back(() => setStep("input"))}<div style={{ flex: 1 }}><div style={{ fontWeight: 900, fontSize: 18 }}>Building Setup</div><div style={{ color: C.muted, fontSize: 12 }}>Floors, basement, top floor, setbacks</div></div></div>
+      <div style={s.header}>{back(() => setStep("input"))}<div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 17, letterSpacing: "-0.02em" }}>Building Setup</div><div style={{ color: C.muted, fontSize: 12 }}>Floors, basement, top floor, setbacks</div></div></div>
       <ProgressArc />
       <div style={s.body}>
-        <div onClick={() => setHasBasement(v => !v)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: hasBasement ? C.accent + "18" : C.card, borderRadius: 12, padding: "12px 16px", marginBottom: 16, border: `1.5px solid ${hasBasement ? C.accent : C.border}`, cursor: "pointer" }}>
+        <div onClick={() => setHasBasement(v => !v)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: hasBasement ? C.selBg : C.card, borderRadius: 12, padding: "12px 16px", marginBottom: 16, border: `1.5px solid ${hasBasement ? C.accent : C.border}`, cursor: "pointer" }}>
           <div><div style={{ fontWeight: 700, fontSize: 14 }}>🕳️ Include a Basement</div><div style={{ color: C.muted, fontSize: 12 }}>Parking, storage, home theatre, gym</div></div>{toggle(hasBasement)}
         </div>
         <span style={s.label}>Floors above ground (including ground floor)</span>
@@ -797,7 +1320,7 @@ export default function App() {
         <div style={{ color: C.muted, fontSize: 11.5, marginBottom: 10 }}>What should your topmost floor be?</div>
         <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 }}>
           {[["normal", "🏠 Normal living floor", "Same as any other floor"], ["terrace", "🏞️ Open Terrace", "Rest of top floor left open — no rooms"], ["penthouse", "🏙️ Penthouse", "A premium smaller living space at the top"], ["both", "🏙️ Penthouse + Terrace", "Penthouse rooms with surrounding open terrace"]].map(([id, lbl, desc]) => (
-            <div key={id} onClick={() => setTopMode(id)} style={{ display: "flex", alignItems: "center", gap: 10, background: topMode === id ? C.accent + "18" : C.card, border: `1.5px solid ${topMode === id ? C.accent : C.border}`, borderRadius: 10, padding: "10px 12px", cursor: "pointer" }}>
+            <div key={id} onClick={() => setTopMode(id)} style={{ display: "flex", alignItems: "center", gap: 10, background: topMode === id ? C.selBg : C.card, border: `1.5px solid ${topMode === id ? C.accent : C.border}`, borderRadius: 10, padding: "10px 12px", cursor: "pointer" }}>
               <div style={{ width: 18, height: 18, borderRadius: "50%", border: `2px solid ${topMode === id ? C.accent : C.border}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{topMode === id && <div style={{ width: 9, height: 9, borderRadius: "50%", background: C.accent }} />}</div>
               <div><div style={{ fontWeight: 700, fontSize: 13 }}>{lbl}</div><div style={{ color: C.muted, fontSize: 11.5 }}>{desc}</div></div>
             </div>
@@ -812,7 +1335,7 @@ export default function App() {
         <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>{field("Left", sbLeft, setSbLeft)}{field("Right", sbRight, setSbRight)}</div>
         <div style={{ background: C.card, borderRadius: 14, padding: 14, marginBottom: 20, border: `1px solid ${C.border}`, textAlign: "center" }}>
           <div style={{ color: C.muted, fontSize: 12 }}>Buildable area per floor (after setbacks)</div>
-          <div style={{ color: C.green, fontWeight: 900, fontSize: 24 }}>{footprint.toLocaleString()} sqft</div>
+          <div style={{ color: C.green, fontWeight: 800, fontSize: 30, letterSpacing: "-0.03em" }}>{footprint.toLocaleString()} sqft</div>
           <div style={{ color: C.muted, fontSize: 11.5, marginTop: 2 }}>~{Math.round((footprint / area) * 100)}% ground coverage · {floorList.length} level(s) to design</div>
         </div>
         <button style={s.btn()} onClick={() => footprint > 0 ? setStep("vertical") : null}>Continue → Heights</button>
@@ -839,7 +1362,7 @@ export default function App() {
 
     return (
       <div style={s.root}>
-        <div style={s.header}>{back(() => setStep("config"))}<div style={{ flex: 1 }}><div style={{ fontWeight: 900, fontSize: 18 }}>Building Heights</div><div style={{ color: C.muted, fontSize: 12 }}>Floor heights, plinth & total height</div></div></div>
+        <div style={s.header}>{back(() => setStep("config"))}<div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 17, letterSpacing: "-0.02em" }}>Building Heights</div><div style={{ color: C.muted, fontSize: 12 }}>Floor heights, plinth & total height</div></div></div>
         <ProgressArc />
         <div style={s.body}>
           <div style={{ color: C.muted, fontSize: 12.5, marginBottom: 16, lineHeight: 1.5 }}>These vertical dimensions follow the National Building Code of India. They decide your ceiling comfort, moisture protection, and total building height.</div>
@@ -895,7 +1418,7 @@ export default function App() {
 
           <div style={{ background: C.card, borderRadius: 14, padding: 14, margin: "10px 0 8px", border: `1px solid ${heightWarn ? C.amber : C.border}`, textAlign: "center" }}>
             <div style={{ color: C.muted, fontSize: 12 }}>Total height from road level</div>
-            <div style={{ color: C.green, fontWeight: 900, fontSize: 26 }}>{totalHeightFromRoad} ft</div>
+            <div style={{ color: C.green, fontWeight: 800, fontSize: 32, letterSpacing: "-0.03em" }}>{totalHeightFromRoad} ft</div>
             <div style={{ color: C.muted, fontSize: 11.5, marginTop: 2 }}>≈ {(totalHeightFromRoad * 0.3048).toFixed(1)} m · plinth {plinthFt} ft + {aboveGroundFloors.length} floor(s){hasBasement ? " (basement below)" : ""}</div>
           </div>
           {heightWarn && <div style={{ color: C.amber, fontSize: 12, marginBottom: 12, lineHeight: 1.5 }}>⚠️ Above ~15 m, many cities require extra approvals and fire-safety provisions. Confirm your local height limit.</div>}
@@ -909,7 +1432,7 @@ export default function App() {
   // PAGE 2.5: SURROUNDINGS, GATES, COURTYARD
   if (step === "surround") return (
     <div style={s.root}>
-      <div style={s.header}>{back(() => setStep("vertical"))}<div style={{ flex: 1 }}><div style={{ fontWeight: 900, fontSize: 18 }}>Plot Surroundings</div><div style={{ color: C.muted, fontSize: 12 }}>What's around your plot, and where are the gates?</div></div></div>
+      <div style={s.header}>{back(() => setStep("vertical"))}<div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 17, letterSpacing: "-0.02em" }}>Plot Surroundings</div><div style={{ color: C.muted, fontSize: 12 }}>What is around your plot, and where are the gates?</div></div></div>
       <ProgressArc />
       <div style={s.body}>
         <div style={{ color: C.muted, fontSize: 12.5, marginBottom: 16, lineHeight: 1.5 }}>
@@ -948,7 +1471,7 @@ export default function App() {
           {SIDE_KEYS.map(side => {
             const on = gates[side];
             return (
-              <div key={side} onClick={() => setGates(g => ({ ...g, [side]: !g[side] }))} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: on ? C.accent + "22" : C.card, border: `1.5px solid ${on ? C.accent : C.border}`, borderRadius: 10, padding: "10px 12px", cursor: "pointer" }}>
+              <div key={side} onClick={() => setGates(g => ({ ...g, [side]: !g[side] }))} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: on ? C.selBg : C.card, border: `1.5px solid ${on ? C.accent : C.border}`, borderRadius: 10, padding: "10px 12px", cursor: "pointer" }}>
                 <span style={{ fontSize: 13, fontWeight: 600 }}>🚪 {SIDE_LABEL[side]}</span>
                 <span style={{ fontSize: 11, color: on ? C.accent : C.muted }}>{on ? "gate" : "—"}</span>
               </div>
@@ -994,10 +1517,10 @@ export default function App() {
   // PAGE 3
   if (step === "direction") return (
     <div style={s.root}>
-      <div style={s.header}>{back(() => setStep("surround"))}<div style={{ flex: 1 }}><div style={{ fontWeight: 900, fontSize: 18 }}>Plot Direction</div><div style={{ color: C.muted, fontSize: 12 }}>Which way does your plot face?</div></div></div>
+      <div style={s.header}>{back(() => setStep("surround"))}<div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 17, letterSpacing: "-0.02em" }}>Plot Direction</div><div style={{ color: C.muted, fontSize: 12 }}>Which way does your plot face?</div></div></div>
       <ProgressArc />
       <div style={s.body}>
-        <div onClick={() => setVastuOn(v => !v)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: vastuOn ? C.purple + "18" : C.card, borderRadius: 12, padding: "12px 16px", marginBottom: 18, border: `1.5px solid ${vastuOn ? C.purple : C.border}`, cursor: "pointer" }}>
+        <div onClick={() => setVastuOn(v => !v)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: vastuOn ? C.selBg : C.card, borderRadius: 12, padding: "12px 16px", marginBottom: 18, border: `1.5px solid ${vastuOn ? C.purple : C.border}`, cursor: "pointer" }}>
           <div><div style={{ fontWeight: 700, fontSize: 14 }}>🧭 Vastu Mode</div><div style={{ color: C.muted, fontSize: 12 }}>Show directions & placement guidance</div></div>{toggle(vastuOn)}
         </div>
         {!vastuOn && <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: 20, textAlign: "center", color: C.muted, fontSize: 13, marginBottom: 18 }}>Vastu mode is off. Your plot will be designed without direction guidance. You can turn it on anytime.</div>}
@@ -1005,7 +1528,7 @@ export default function App() {
           <Dial points={points} facing={facing} setFacing={setFacing} />
           <div style={{ background: C.card, borderRadius: 14, padding: 16, margin: "14px 0", border: `1px solid ${C.border}`, textAlign: "center" }}>
             <div style={{ color: C.muted, fontSize: 12 }}>Front faces</div>
-            <div style={{ color: C.amber, fontWeight: 900, fontSize: 24 }}>{facing}° {facingDir}</div>
+            <div style={{ color: C.amber, fontWeight: 800, fontSize: 30, letterSpacing: "-0.03em" }}>{facing}° {facingDir}</div>
             {note && <div style={{ color: C.muted, fontSize: 12, marginTop: 2 }}>({note} — both are acceptable)</div>}
           </div>
           <div style={{ background: C.card, borderRadius: 14, padding: 16, marginBottom: 18, border: `1px solid ${C.border}` }}>
@@ -1031,19 +1554,22 @@ export default function App() {
     const used = f.fullParking ? footprint : coreArea + roomsArea;
     const remaining = footprint - used;
     const pct = Math.min(100, Math.round((used / footprint) * 100));
-    const freeForNewRoom = footprint - coreArea - roomsArea;
+    const floorCirc = circulationFor(f.rooms.length + 1); // +1 anticipates the room being added
+    const freeForNewRoom = footprint - coreArea - floorCirc - roomsArea;
     return (
       <div style={s.root}>
-        <div style={s.header}>{back(() => cur === 0 ? setStep("direction") : setCur(cur - 1))}<div style={{ flex: 1 }}><div style={{ fontWeight: 900, fontSize: 18 }}>{meta.icon} {meta.label}</div><div style={{ color: C.muted, fontSize: 12 }}>Level {cur + 1} of {floorList.length}{vastuOn ? ` · faces ${facingDir}` : ""}</div></div></div>
+        <div style={s.header}>{back(() => cur === 0 ? setStep("direction") : setCur(cur - 1))}<div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 17, letterSpacing: "-0.02em" }}>{meta.icon} {meta.label}{projectType === "builder" && meta.kind !== "basement" && meta.kind !== "terrace" ? " · Unit" : projectType === "apartment" && meta.kind !== "basement" && meta.kind !== "terrace" ? ` · ${flatsPerFloor} flats` : ""}</div><div style={{ color: C.muted, fontSize: 12 }}>{projectType === "builder" && meta.kind !== "basement" && meta.kind !== "terrace" ? "An independent home" : projectType === "apartment" && meta.kind !== "basement" && meta.kind !== "terrace" ? `${flatsPerFloor} × ${flatBHK}BHK on this floor` : `Level ${cur + 1} of ${floorList.length}`}{vastuOn ? ` · faces ${facingDir}` : ""}</div></div></div>
         <div style={{ display: "flex", gap: 6, padding: "12px 16px 0" }}>{floorList.map((_, i) => <div key={i} style={{ flex: 1, height: 4, borderRadius: 2, background: i < cur ? C.green : i === cur ? C.accent : C.border }} />)}</div>
         <ProgressArc />
         <div style={s.body}>
           <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, marginBottom: 14 }}>
             <div style={{ color: C.muted, fontSize: 12, fontWeight: 600, marginBottom: 8 }}>Reserved on every floor (standard minimum)</div>
-            <div style={{ display: "flex", gap: 8 }}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <span style={{ background: CORE.stairs.color + "33", color: C.text, border: `1px solid ${CORE.stairs.color}`, borderRadius: 8, padding: "5px 10px", fontSize: 12, fontWeight: 600 }}>🪜 Staircase · {CORE.stairs.min} sqft</span>
               {liftOn && <span style={{ background: CORE.lift.color + "33", color: C.purple, border: `1px solid ${CORE.lift.color}`, borderRadius: 8, padding: "5px 10px", fontSize: 12, fontWeight: 600 }}>🛗 Lift · {CORE.lift.min} sqft</span>}
+              {!f.fullParking && f.rooms.length > 1 && <span style={{ background: C.surface, color: C.text, border: `1px solid ${C.border}`, borderRadius: 8, padding: "5px 10px", fontSize: 12, fontWeight: 600 }}>🚶 Hallways · ~{circulationFor(f.rooms.length).toLocaleString()} sqft</span>}
             </div>
+            {!f.fullParking && f.rooms.length > 1 && <div style={{ color: C.muted, fontSize: 11, marginTop: 8, lineHeight: 1.5 }}>About 10% is kept for hallways and movement between rooms — real homes need circulation space, not wall-to-wall rooms.</div>}
           </div>
           {isGroundLike && purpose === "residential" && (
             <div onClick={toggleFP} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: f.fullParking ? C.amber + "22" : C.card, borderRadius: 12, padding: "12px 16px", marginBottom: 14, border: `1.5px solid ${f.fullParking ? C.amber : C.border}`, cursor: "pointer" }}>
@@ -1053,8 +1579,34 @@ export default function App() {
           )}
           {meta.kind === "terrace" && <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginBottom: 14, color: C.muted, fontSize: 13, textAlign: "center" }}>🏞️ This is an open terrace floor. You can still add a small store or garden corner, but most space stays open.</div>}
           {!f.fullParking && <>
+            {/* BRIEF POOL: rooms from Phase 1 still to place */}
+            {totalUnplaced() > 0 && (
+              <div style={{ background: C.accent + "12", border: `1.5px solid ${C.accent}55`, borderRadius: 12, padding: 12, marginBottom: 14 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <span style={{ color: C.accent, fontSize: 12.5, fontWeight: 800 }}>📋 From your brief — tap to place here</span>
+                  <button onClick={autoDistribute} style={{ background: C.accent, border: "none", color: "#fff", borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontSize: 11.5, fontWeight: 700 }}>✨ Auto-place all</button>
+                </div>
+                <div style={{ color: C.muted, fontSize: 11, marginBottom: 10 }}>{totalUnplaced()} room(s) from your brief still to place across your floors.</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 7 }}>
+                  {unplacedPool().map(item => {
+                    const r = ROOMS[item.typeId];
+                    const fits = (footprint - coreArea - roomsArea) >= r.min;
+                    return (
+                      <div key={item.typeId} onClick={() => fits && addRoom(item.typeId)} style={{ display: "flex", alignItems: "center", gap: 5, background: fits ? C.card : C.surface, border: `1.5px solid ${fits ? C.accent : C.border}`, borderRadius: 9, padding: "6px 10px", cursor: fits ? "pointer" : "not-allowed", opacity: fits ? 1 : 0.45 }}>
+                        <span style={{ fontSize: 15 }}>{r.icon}</span>
+                        <span style={{ fontSize: 11.5, fontWeight: 600 }}>{r.label}</span>
+                        <span style={{ fontSize: 11, fontWeight: 800, color: C.accent, background: C.selBg, borderRadius: 6, padding: "0 5px" }}>×{item.count}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            {totalUnplaced() === 0 && briefRoomList().length > 0 && (
+              <div style={{ background: C.green + "14", border: `1px solid ${C.green}55`, borderRadius: 10, padding: 10, marginBottom: 14, fontSize: 12, color: C.green, textAlign: "center", fontWeight: 600 }}>✓ All your briefed rooms are placed. Add extras below if you like.</div>
+            )}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-              <span style={{ color: C.muted, fontSize: 12, fontWeight: 600 }}>Tap to add spaces</span>
+              <span style={{ color: C.muted, fontSize: 12, fontWeight: 600 }}>Or add any other space</span>
               <button onClick={suggestRooms} style={{ background: C.purple + "22", border: `1px solid ${C.purple}`, color: C.purple, borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>✨ Suggest rooms</button>
             </div>
             <div style={{ color: C.muted, fontSize: 11.5, marginBottom: 8 }}>{Math.max(0, freeForNewRoom).toLocaleString()} sqft free right now on this floor</div>
@@ -1065,13 +1617,25 @@ export default function App() {
                 </div>
               ); })}
             </div>
+            {/* CUSTOM SPACE: user defines their own room */}
+            <div style={{ background: C.surface, border: `1.5px dashed ${C.accent}66`, borderRadius: 12, padding: 12, marginBottom: 14 }}>
+              <div style={{ color: C.accent, fontSize: 12, fontWeight: 700, marginBottom: 8 }}>✏️ Add your own space</div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                <input value={customName} onChange={e => setCustomName(e.target.value)} placeholder="Name (e.g. Home Theatre, Bar)" style={{ flex: 2, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 9, color: C.text, fontSize: 13, padding: "9px 12px", outline: "none", boxSizing: "border-box" }} />
+                <input value={customSize} onChange={e => setCustomSize(Math.max(20, +e.target.value || 0))} type="number" style={{ flex: 1, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 9, color: C.text, fontSize: 13, padding: "9px 8px", outline: "none", boxSizing: "border-box", textAlign: "center" }} />
+              </div>
+              <button onClick={addCustomRoom} disabled={!customName.trim() || (footprint - coreArea - roomsArea) < customSize} style={{ width: "100%", padding: "9px 0", borderRadius: 9, border: "none", fontWeight: 700, fontSize: 12.5, cursor: customName.trim() ? "pointer" : "not-allowed", background: customName.trim() && (footprint - coreArea - roomsArea) >= customSize ? C.accent : C.border, color: customName.trim() && (footprint - coreArea - roomsArea) >= customSize ? "#fff" : C.muted }}>
+                + Add "{customName.trim() || "your space"}" ({customSize} sqft)
+              </button>
+              {(footprint - coreArea - roomsArea) < customSize && customName.trim() && <div style={{ color: C.red, fontSize: 10.5, marginTop: 5, textAlign: "center" }}>Only {Math.max(0, footprint - coreArea - roomsArea)} sqft free — reduce the size.</div>}
+            </div>
             {f.rooms.length > 0 && (
               <div style={{ marginBottom: 14 }}>
-                <span style={s.label}>This floor's spaces — drag to resize</span>
-                <div style={{ color: C.muted, fontSize: 11.5, marginBottom: 10, lineHeight: 1.5 }}>Each room's maximum is the floor's total area, minus stairs{liftOn ? ", lift" : ""} and every other room you've added.</div>
+                <span style={s.label}>Spaces on this floor — drag to resize</span>
+                <div style={{ color: C.muted, fontSize: 11.5, marginBottom: 10, lineHeight: 1.5 }}>Each room max is the floor total area, minus stairs{liftOn ? ", lift" : ""} and every other room added.</div>
                 {f.rooms.map(r => { const t = ROOMS[r.typeId]; const othersArea = f.rooms.filter(x => x.uid !== r.uid).reduce((a, x) => a + x.sqft, 0); const liveMax = Math.max(t.min, footprint - coreArea - othersArea); return (
                   <div key={r.uid} style={{ marginBottom: 14, background: C.card, borderRadius: 10, padding: "10px 12px", border: `1px solid ${C.border}` }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}><span>{t.icon}</span><span style={{ flex: 1, fontSize: 13, fontWeight: 600 }}>{t.label}</span><button onClick={() => removeRoom(r.uid)} style={{ width: 24, height: 24, borderRadius: 6, border: `1px solid ${C.red}55`, background: "transparent", color: C.red, cursor: "pointer", fontSize: 13 }}>×</button></div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}><span>{t.icon}</span><span style={{ flex: 1, fontSize: 13, fontWeight: 600 }}>{r.customLabel || t.label}</span><button onClick={() => removeRoom(r.uid)} style={{ width: 24, height: 24, borderRadius: 6, border: `1px solid ${C.red}55`, background: "transparent", color: C.red, cursor: "pointer", fontSize: 13 }}>×</button></div>
                     <SizeSlider value={r.sqft} min={t.min} max={liveMax} color={t.color} onChange={(v) => setRoomSize(r.uid, v)} />
                   </div>
                 ); })}
@@ -1098,7 +1662,7 @@ export default function App() {
       ...(effectiveCourtyard > 0 ? [{ ...COURTYARD, sqft: effectiveCourtyard }] : []),
       ...(shaftRecommended ? [{ ...SHAFT, sqft: SHAFT.min }] : [])];
     const roomsForLayout = f.fullParking ? [{ uid: 9999, typeId: "park", sqft: Math.max(60, footprint - coreArea) }] : f.rooms;
-    const placed = activeStyle ? generateLayout(points, facing, activeStyle, roomsForLayout, cores) : [];
+    const placed = activeStyle ? sliceLayout(points, facing, roomsForLayout, cores) : [];
     const styleObj = STYLES.find(x => x.id === activeStyle);
     const reason = {
       vastu: "Kitchen placed toward the South-East (fire), master bedroom in the stable South-West, pooja in the sacred North-East, toilets kept away from the North-East.",
@@ -1108,7 +1672,7 @@ export default function App() {
     };
     return (
       <div style={s.root}>
-        <div style={s.header}>{back(() => { setCur(floorList.length - 1); setStep("floor"); })}<div style={{ flex: 1 }}><div style={{ fontWeight: 900, fontSize: 18 }}>Choose Layout Style</div><div style={{ color: C.muted, fontSize: 12 }}>How should your rooms be arranged?</div></div></div>
+        <div style={s.header}>{back(() => { setCur(floorList.length - 1); setStep("floor"); })}<div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 17, letterSpacing: "-0.02em" }}>Choose Layout Style</div><div style={{ color: C.muted, fontSize: 12 }}>How should your rooms be arranged?</div></div></div>
         <ProgressArc />
         <div style={s.body}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>
@@ -1116,7 +1680,7 @@ export default function App() {
               const selected = activeStyle === st.id;
               const locked = st.premium;
               return (
-                <div key={st.id} onClick={() => pickStyle(st)} style={{ position: "relative", background: selected ? C.accent + "22" : C.card, border: `1.5px solid ${selected ? C.accent : C.border}`, borderRadius: 12, padding: "14px 12px", cursor: "pointer", opacity: locked ? 0.75 : 1 }}>
+                <div key={st.id} onClick={() => pickStyle(st)} style={{ position: "relative", background: selected ? C.selBg : C.card, border: `1.5px solid ${selected ? C.accent : C.border}`, borderRadius: 12, padding: "14px 12px", cursor: "pointer", opacity: locked ? 0.75 : 1 }}>
                   {locked && <div style={{ position: "absolute", top: 8, right: 8, background: C.amber + "26", color: C.amber, border: `1px solid ${C.amber}66`, borderRadius: 6, padding: "1px 6px", fontSize: 9, fontWeight: 800 }}>🔒 PREMIUM</div>}
                   <div style={{ fontSize: 22 }}>{st.icon}</div>
                   <div style={{ fontWeight: 700, fontSize: 13, marginTop: 6 }}>{st.label}</div>
@@ -1126,7 +1690,7 @@ export default function App() {
             })}
           </div>
 
-          {lockMsg === "vastu-off" && <div style={{ background: C.purple + "18", border: `1px solid ${C.purple}55`, borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 12.5, color: C.purple }}>Turn on Vastu Mode (on the Direction step) to use the Vastu-First style.</div>}
+          {lockMsg === "vastu-off" && <div style={{ background: C.selBg, border: `1px solid ${C.purple}55`, borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 12.5, color: C.purple }}>Turn on Vastu Mode (on the Direction step) to use the Vastu-First style.</div>}
           {lockMsg && lockMsg !== "vastu-off" && <div style={{ background: C.amber + "18", border: `1px solid ${C.amber}55`, borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 12.5, color: C.amber }}>✨ <b>{lockMsg}</b> is a Premium style. Upgrade to unlock more layout styles, multiple AI options, and contractor-ready export.</div>}
 
           {!activeStyle && <div style={{ background: C.card, border: `1px dashed ${C.border}`, borderRadius: 12, padding: 24, textAlign: "center", color: C.muted, fontSize: 13, marginBottom: 16 }}>Pick a free style above to generate your layout.</div>}
@@ -1135,12 +1699,12 @@ export default function App() {
             {floorList.length > 1 && (
               <div style={{ display: "flex", gap: 6, overflowX: "auto", marginBottom: 12, paddingBottom: 2 }}>
                 {floorList.map((meta, i) => (
-                  <button key={i} onClick={() => setLayoutFloor(i)} style={{ flexShrink: 0, padding: "6px 10px", borderRadius: 8, fontSize: 11.5, fontWeight: 700, cursor: "pointer", border: `1.5px solid ${layoutFloor === i ? C.accent : C.border}`, background: layoutFloor === i ? C.accent + "22" : "transparent", color: layoutFloor === i ? C.accent : C.muted }}>{meta.icon} {meta.label.replace(" Floor", "")}</button>
+                  <button key={i} onClick={() => setLayoutFloor(i)} style={{ flexShrink: 0, padding: "6px 10px", borderRadius: 8, fontSize: 11.5, fontWeight: 700, cursor: "pointer", border: `1.5px solid ${layoutFloor === i ? C.accent : C.border}`, background: layoutFloor === i ? C.selBg : "transparent", color: layoutFloor === i ? C.accent : C.muted }}>{meta.icon} {meta.label.replace(" Floor", "")}</button>
                 ))}
               </div>
             )}
             <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 4 }}>{styleObj.icon} {styleObj.label} — {floorList[layoutFloor]?.label}</div>
-            <LayoutView points={points} placed={placed} facing={facing} />
+            <SliceView points={points} rooms={placed} facing={facing} />
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
               {placed.map((b, k) => <span key={k} style={{ display: "flex", alignItems: "center", gap: 5, color: C.muted, fontSize: 11.5 }}><span style={{ width: 9, height: 9, borderRadius: 2, background: b.color }} />{b.label}{b.zone ? ` · ${b.zone}` : ""}</span>)}
             </div>
@@ -1148,7 +1712,7 @@ export default function App() {
               <div style={{ color: C.green, fontWeight: 700, fontSize: 13, marginBottom: 4 }}>Why this arrangement</div>
               <div style={{ color: C.muted, fontSize: 12.5, lineHeight: 1.5 }}>{reason[activeStyle]}</div>
             </div>
-            <button style={s.btn()} onClick={() => setStep("summary")}>Continue → Summary & Cost</button>
+            <button style={s.btn()} onClick={() => setStep("summary")}>Continue → Your Design Summary</button>
           </>}
 
           <div style={{ background: C.purple + "14", border: `1px solid ${C.purple}55`, borderRadius: 12, padding: 14, marginTop: 16 }}>
@@ -1166,7 +1730,7 @@ export default function App() {
       ...(effectiveCourtyard > 0 ? [{ ...COURTYARD, sqft: effectiveCourtyard }] : []),
       ...(shaftRecommended ? [{ ...SHAFT, sqft: SHAFT.min }] : [])];
     if (f.fullParking) return [...cores, { ...ROOMS.park, sqft: Math.max(60, footprint - coreArea) }];
-    return [...cores, ...f.rooms.map(r => ({ ...ROOMS[r.typeId], sqft: r.sqft }))];
+    return [...cores, ...f.rooms.map(r => ({ ...ROOMS[r.typeId], sqft: r.sqft, label: r.customLabel || ROOMS[r.typeId].label }))];
   };
   const totalBuilt = floorData.reduce((a, f) => a + (f.fullParking ? footprint : coreArea + f.rooms.reduce((b, r) => b + r.sqft, 0)), 0);
   const rate = RATES[quality];
@@ -1175,11 +1739,22 @@ export default function App() {
   const inLakh = (n) => (n / 100000).toFixed(1);
   return (
     <div style={s.root}>
-      <div style={s.header}>{back(() => setStep("style"))}<div style={{ flex: 1 }}><div style={{ fontWeight: 900, fontSize: 18 }}>{projectName || "Your Building"}</div><div style={{ color: C.muted, fontSize: 12 }}>{floorList.length} level(s){liftOn ? " · lift" : ""}{vastuOn ? ` · faces ${facingDir}` : ""}</div></div></div>
+      <div style={s.header}>{back(() => setStep("style"))}<div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 17, letterSpacing: "-0.02em" }}>{projectName || "Your Building"}</div><div style={{ color: C.muted, fontSize: 12 }}>{floorList.length} level(s){liftOn ? " · lift" : ""}{vastuOn ? ` · faces ${facingDir}` : ""}</div></div></div>
       <ProgressArc />
       <div style={s.body}>
+        <div style={{ fontWeight: 800, fontSize: 27, marginBottom: 6, letterSpacing: "-0.03em", lineHeight: 1.15 }}>Your design is ready</div>
+        <div style={{ color: C.muted, fontSize: 13, marginBottom: 18, lineHeight: 1.5 }}>Here is your complete {projLabel} — the brief an architect would hand you to take forward.</div>
         <span style={s.label}>Project name</span>
-        <input style={{ ...s.input, marginBottom: 18 }} value={projectName} onChange={e => setProjectName(e.target.value)} placeholder="e.g. My Home in Delhi" />
+        <input style={{ ...s.input, marginBottom: 18 }} value={projectName} onChange={e => setProjectName(e.target.value)} placeholder={projectType === "apartment" ? "e.g. Green Residency" : projectType === "builder" ? "e.g. Sharma Floors" : "e.g. My Home in Delhi"} />
+        {projectType === "builder" && (() => {
+          const units = floorList.filter(f => f.kind !== "basement" && f.kind !== "terrace").length;
+          return <div style={{ background: C.selBg, border: `1px solid ${C.accent}`, borderRadius: 12, padding: 14, marginBottom: 18 }}><div style={{ fontWeight: 700, fontSize: 14 }}>🏢 Builder Floors — {units} independent unit{units > 1 ? "s" : ""}</div><div style={{ color: C.muted, fontSize: 12, marginTop: 2 }}>Each floor is a complete {unitProgram.bedrooms}BHK home with its own kitchen and entrance, sharing a common staircase.</div></div>;
+        })()}
+        {projectType === "apartment" && (() => {
+          const livingFloors = floorList.filter(f => f.kind !== "basement" && f.kind !== "terrace").length;
+          const totalFlats = livingFloors * flatsPerFloor;
+          return <div style={{ background: C.selBg, border: `1px solid ${C.accent}`, borderRadius: 12, padding: 14, marginBottom: 18 }}><div style={{ fontWeight: 700, fontSize: 14 }}>🏬 Apartments — {totalFlats} flat{totalFlats > 1 ? "s" : ""} total</div><div style={{ color: C.muted, fontSize: 12, marginTop: 2 }}>{flatsPerFloor} × {flatBHK}BHK on each of {livingFloors} floor{livingFloors > 1 ? "s" : ""}, each flat self-contained, sharing a common corridor and staircase.</div></div>;
+        })()}
         <div style={{ display: "flex", gap: 10, marginBottom: 18 }}>
           <div style={{ flex: 1, background: C.card, borderRadius: 12, padding: 14, border: `1px solid ${C.border}`, textAlign: "center" }}><div style={{ color: C.muted, fontSize: 11 }}>Plot area</div><div style={{ color: C.accent, fontWeight: 800, fontSize: 17 }}>{area.toLocaleString()}</div><div style={{ color: C.muted, fontSize: 10 }}>sqft</div></div>
           <div style={{ flex: 1, background: C.card, borderRadius: 12, padding: 14, border: `1px solid ${C.border}`, textAlign: "center" }}><div style={{ color: C.muted, fontSize: 11 }}>Built-up</div><div style={{ color: C.green, fontWeight: 800, fontSize: 17 }}>{totalBuilt.toLocaleString()}</div><div style={{ color: C.muted, fontSize: 10 }}>sqft</div></div>
@@ -1189,7 +1764,7 @@ export default function App() {
         <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>{[["basic", "Basic"], ["standard", "Standard"], ["premium", "Premium"]].map(([id, lbl]) => <button key={id} style={s.chip(quality === id)} onClick={() => setQuality(id)}>{lbl}</button>)}</div>
         <div style={{ background: C.card, borderRadius: 14, padding: 16, marginBottom: 20, border: `1px solid ${C.border}`, textAlign: "center" }}>
           <div style={{ color: C.muted, fontSize: 12 }}>Estimated construction cost</div>
-          <div style={{ color: C.green, fontWeight: 900, fontSize: 24 }}>₹{inLakh(costLow)}L – ₹{inLakh(costHigh)}L</div>
+          <div style={{ color: C.green, fontWeight: 800, fontSize: 30, letterSpacing: "-0.03em" }}>₹{inLakh(costLow)}L – ₹{inLakh(costHigh)}L</div>
           <div style={{ color: C.muted, fontSize: 11.5, marginTop: 2 }}>at ₹{rate.toLocaleString()}/sqft · approximate, varies by city & materials</div>
         </div>
         {floorList.map((meta, i) => {
@@ -1246,7 +1821,7 @@ function Dial({ points, facing, setFacing }) {
         ); })}
         <circle cx={dot[0]} cy={dot[1]} r={6} fill={C.accent} stroke="#fff" strokeWidth={1.5} />
         <g transform={`rotate(${groupRot} ${cx} ${cy})`}>
-          <polygon points={poly} fill={C.accent + "22"} stroke={C.accent} strokeWidth={2} strokeLinejoin="round" />
+          <polygon points={poly} fill={C.selBg} stroke={C.accent} strokeWidth={2} strokeLinejoin="round" />
           <line x1={fmx} y1={fmy} x2={fmx} y2={fmy + 26} stroke={C.amber} strokeWidth={2.5} />
           <polygon points={`${fmx - 5},${fmy + 22} ${fmx + 5},${fmy + 22} ${fmx},${fmy + 32}`} fill={C.amber} />
           <text x={fmx} y={fmy + 46} textAnchor="middle" fontSize={10} fontWeight={700} fill={C.amber}>FRONT</text>
