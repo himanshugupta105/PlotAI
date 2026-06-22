@@ -408,7 +408,7 @@ function SliceView({ points, rooms, facing, gates }) {
   const gateSide = gates ? (gates.front ? "front" : gates.left ? "left" : gates.right ? "right" : gates.rear ? "rear" : "front") : "front";
 
   return (
-    <svg width={W} height={H} style={{ background: "#fff", borderRadius: 12, border: `1px solid ${C.border}`, display: "block", margin: "0 auto" }}>
+    <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ background: "#fff", borderRadius: 12, border: `1px solid ${C.border}`, display: "block", margin: "0 auto", maxWidth: W, height: "auto" }}>
       {/* room fills + interior walls */}
       {rooms.map((r, i) => {
         const x = sx(r.px), y = sy(r.py + r.ph), w = r.pw * scale, h = r.ph * scale;
@@ -767,6 +767,16 @@ export default function App() {
     const t2 = setTimeout(() => setShowSplash(false), 2700);
     return () => { clearTimeout(t1); clearTimeout(t2); };
   }, []);
+  // SCROLL-TO-TOP: every time the step changes, jump to the top of the page
+  useEffect(() => {
+    try { window.scrollTo({ top: 0, left: 0, behavior: "auto" }); } catch (e) { window.scrollTo(0, 0); }
+  }, [step]);
+  // VIEWPORT: ensure proper mobile scaling (safety net if index.html lacks it)
+  useEffect(() => {
+    let m = document.querySelector('meta[name="viewport"]');
+    if (!m) { m = document.createElement("meta"); m.name = "viewport"; document.head.appendChild(m); }
+    m.content = "width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1";
+  }, []);
   // PHASE 1 — THE BRIEF
   const [familyType, setFamilyType] = useState(null);
   const [program, setProgram] = useState(PROGRAM_TEMPLATES.family);
@@ -1064,10 +1074,10 @@ export default function App() {
   };
 
   const s = {
-    root: { fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif", background: C.bg, minHeight: "100vh", color: C.text, maxWidth: 440, margin: "0 auto", paddingBottom: 56, letterSpacing: "-0.01em" },
+    root: { fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif", background: C.bg, minHeight: "100vh", color: C.text, width: "100%", maxWidth: 600, margin: "0 auto", paddingBottom: "max(56px, env(safe-area-inset-bottom))", letterSpacing: "-0.01em", boxSizing: "border-box" },
     header: { background: C.bg, padding: "20px 24px 14px", display: "flex", alignItems: "center", gap: 12 },
     logo: { width: 34, height: 34, borderRadius: 9, background: C.accent, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 },
-    body: { padding: "8px 24px" },
+    body: { padding: "8px clamp(16px, 5vw, 32px)" },
     label: { color: C.muted, fontSize: 11, fontWeight: 600, marginBottom: 8, display: "block", textTransform: "uppercase", letterSpacing: "0.06em" },
     input: { width: "100%", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, color: C.text, fontSize: 15, padding: "13px 16px", outline: "none", boxSizing: "border-box", fontWeight: 500 },
     btn: (v = "primary") => ({ width: "100%", padding: "16px 0", borderRadius: 14, border: v === "primary" ? "none" : `1px solid ${C.border}`, fontWeight: 600, fontSize: 15, cursor: "pointer", background: v === "primary" ? C.accent : "transparent", color: v === "primary" ? "#fff" : C.muted, marginTop: 10, letterSpacing: "-0.01em", transition: "opacity .15s" }),
@@ -1100,7 +1110,7 @@ export default function App() {
     </div>
   ) : null;
   const ProgressArc = () => (
-    <div style={{ display: "flex", alignItems: "center", padding: "10px 16px 4px", maxWidth: 430, margin: "0 auto" }}>
+    <div style={{ display: "flex", alignItems: "center", padding: "10px clamp(16px, 5vw, 32px) 4px", maxWidth: 600, margin: "0 auto", boxSizing: "border-box" }}>
       {PHASES.map((p, i) => {
         const done = p.id < currentPhase;
         const active = p.id === currentPhase;
