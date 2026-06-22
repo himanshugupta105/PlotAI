@@ -1942,12 +1942,16 @@ export default function App() {
         </div>
         {floorList.map((meta, i) => {
           const f = floorData[i] || { fullParking: false, rooms: [] };
-          const blocks = blocksFor(f);
+          const fcores = [{ ...CORE.stairs, id: "stairs", sqft: CORE.stairs.min }, ...(liftOn ? [{ ...CORE.lift, id: "lift", sqft: CORE.lift.min }] : []),
+            ...(effectiveCourtyard > 0 ? [{ ...COURTYARD, sqft: effectiveCourtyard }] : []),
+            ...(shaftRecommended ? [{ ...SHAFT, sqft: SHAFT.min }] : [])];
+          const froom = f.fullParking ? [{ uid: 9999, typeId: "park", sqft: Math.max(60, footprint - coreArea) }] : f.rooms;
+          const fplaced = sliceLayout(points, facing, froom, fcores, layoutVariant);
           const used = f.fullParking ? footprint : coreArea + f.rooms.reduce((b, r) => b + r.sqft, 0);
           return (
             <div key={i} style={{ marginBottom: 22 }}>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}><span style={{ fontWeight: 800, fontSize: 15 }}>{meta.icon} {meta.label}</span><span style={{ color: C.muted, fontSize: 12 }}>{used.toLocaleString()} sqft used</span></div>
-              <ShapeView points={points} blocks={blocks} />
+              <SliceView points={points} rooms={fplaced} facing={facing} gates={gates} />
             </div>
           );
         })}
