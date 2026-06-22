@@ -1,5 +1,4 @@
- 
- import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect } from "react";
 
 const C = {
   bg: "#FFFFFF", surface: "#F7F7F5", card: "#FFFFFF",
@@ -19,30 +18,30 @@ const COURTYARD = { id: "court", label: "Courtyard", icon: "🏛️", color: "#5
 const SHAFT     = { id: "shaft", label: "Vent Shaft", icon: "🌀", color: "#7FBFA3", min: 12 };
 
 const ROOMS = {
-  park:       { label: "Parking",        icon: "🚗", color: "#7A8FA6", min: 130 },
-  garden:     { label: "Front Garden",   icon: "🌿", color: "#56C98A", min: 80 },
-  living:     { label: "Living Room",    icon: "🛋️", color: "#4F8EF7", min: 150 },
-  master:     { label: "Master Bedroom", icon: "🛏️", color: "#3ECFA4", min: 140 },
-  bed:        { label: "Bedroom",        icon: "🛏️", color: "#37B894", min: 110 },
-  kitchen:    { label: "Kitchen",        icon: "🍳", color: "#F5A623", min: 80 },
-  bath:       { label: "Bathroom",       icon: "🚿", color: "#9B6DFF", min: 35 },
-  dining:     { label: "Dining",         icon: "🍽️", color: "#F08AB0", min: 90 },
-  balcony:    { label: "Balcony",        icon: "🌅", color: "#5BC0BE", min: 35 },
-  office:     { label: "Office / Study", icon: "💻", color: "#FFB347", min: 70 },
-  pooja:      { label: "Pooja Room",     icon: "🪔", color: "#E6B655", min: 20 },
-  store:      { label: "Store",          icon: "📦", color: "#8A8FA6", min: 25 },
-  guest:      { label: "Guest Room",     icon: "🛌", color: "#6FB1E0", min: 110 },
-  utility:    { label: "Utility / Wash", icon: "🧺", color: "#7FBFA3", min: 25 },
-  servant:    { label: "Servant Room",   icon: "🧹", color: "#9AA0BC", min: 60 },
-  terrace:    { label: "Terrace",        icon: "🏞️", color: "#84C9C0", min: 80 },
-  reception:  { label: "Reception",      icon: "🛎️", color: "#4F8EF7", min: 100 },
-  cabin:      { label: "Cabin",          icon: "🚪", color: "#3ECFA4", min: 80 },
-  conference: { label: "Conference",     icon: "👥", color: "#F5A623", min: 120 },
-  pantry:     { label: "Pantry",         icon: "☕", color: "#E6B655", min: 45 },
-  cellar:     { label: "Storage Cellar", icon: "🗄️", color: "#8A8FA6", min: 100 },
-  hometheatre:{ label: "Home Theatre",   icon: "🎬", color: "#A479E0", min: 150 },
-  gym:        { label: "Gym",            icon: "🏋️", color: "#E07A5F", min: 100 },
-  custom:     { label: "Custom Space",   icon: "✏️", color: "#9C7B52", min: 30 },
+  park:       { label: "Parking",        icon: "🚗", color: "#7A8FA6", min: 130, ideal: 150 },
+  garden:     { label: "Front Garden",   icon: "🌿", color: "#56C98A", min: 80, ideal: 100 },
+  living:     { label: "Living Room",    icon: "🛋️", color: "#4F8EF7", min: 150, ideal: 220 },
+  master:     { label: "Master Bedroom", icon: "🛏️", color: "#3ECFA4", min: 140, ideal: 144 },
+  bed:        { label: "Bedroom",        icon: "🛏️", color: "#37B894", min: 110, ideal: 120 },
+  kitchen:    { label: "Kitchen",        icon: "🍳", color: "#F5A623", min: 80, ideal: 100 },
+  bath:       { label: "Bathroom",       icon: "🚿", color: "#9B6DFF", min: 35, ideal: 45 },
+  dining:     { label: "Dining",         icon: "🍽️", color: "#F08AB0", min: 90, ideal: 120 },
+  balcony:    { label: "Balcony",        icon: "🌅", color: "#5BC0BE", min: 35, ideal: 50 },
+  office:     { label: "Office / Study", icon: "💻", color: "#FFB347", min: 70, ideal: 100 },
+  pooja:      { label: "Pooja Room",     icon: "🪔", color: "#E6B655", min: 20, ideal: 35 },
+  store:      { label: "Store",          icon: "📦", color: "#8A8FA6", min: 25, ideal: 40 },
+  guest:      { label: "Guest Room",     icon: "🛌", color: "#6FB1E0", min: 110, ideal: 120 },
+  utility:    { label: "Utility / Wash", icon: "🧺", color: "#7FBFA3", min: 25, ideal: 40 },
+  servant:    { label: "Servant Room",   icon: "🧹", color: "#9AA0BC", min: 60, ideal: 80 },
+  terrace:    { label: "Terrace",        icon: "🏞️", color: "#84C9C0", min: 80, ideal: 120 },
+  reception:  { label: "Reception",      icon: "🛎️", color: "#4F8EF7", min: 100, ideal: 140 },
+  cabin:      { label: "Cabin",          icon: "🚪", color: "#3ECFA4", min: 80, ideal: 100 },
+  conference: { label: "Conference",     icon: "👥", color: "#F5A623", min: 120, ideal: 160 },
+  pantry:     { label: "Pantry",         icon: "☕", color: "#E6B655", min: 45, ideal: 60 },
+  cellar:     { label: "Storage Cellar", icon: "🗄️", color: "#8A8FA6", min: 100, ideal: 120 },
+  hometheatre:{ label: "Home Theatre",   icon: "🎬", color: "#A479E0", min: 150, ideal: 200 },
+  gym:        { label: "Gym",            icon: "🏋️", color: "#E07A5F", min: 100, ideal: 140 },
+  custom:     { label: "Custom Space",   icon: "✏️", color: "#9C7B52", min: 30, ideal: 60 },
 };
 
 const RES_GROUND = ["park", "garden", "living", "bed", "kitchen", "bath", "pooja", "store", "utility"];
@@ -384,30 +383,94 @@ function sliceLayout(points, facing, rooms, cores) {
 }
 
 // ===== SLICING-TREE RENDERER (Stage 1: clean tiled rooms) =====
-function SliceView({ points, rooms, facing }) {
-  const W = 340, H = 300, pad = 30;
+function SliceView({ points, rooms, facing, gates }) {
+  const M = 46; // margin for dimension lines + labels
+  const W = 360, H = 360;
   if (!points) return null;
   const bb = bboxOf(points);
   const bw = bb.maxX - bb.minX || 1, bh = bb.maxY - bb.minY || 1;
-  const scale = Math.min((W - 2 * pad) / bw, (H - 2 * pad) / bh);
-  const offX = (W - bw * scale) / 2, offY = (H - bh * scale) / 2;
+  const scale = Math.min((W - 2 * M) / bw, (H - 2 * M) / bh);
+  const drawW = bw * scale, drawH = bh * scale;
+  const offX = (W - drawW) / 2, offY = (H - drawH) / 2;
   const sx = x => (x - bb.minX) * scale + offX;
   const sy = y => (bb.maxY - y) * scale + offY;
+  const EXT = 5, INT = 2; // wall thicknesses (px)
+  const ft = (n) => Math.round(n); // plot units are feet
+
+  // building outline in screen coords
+  const oL = sx(bb.minX), oR = sx(bb.maxX), oT = sy(bb.maxY), oB = sy(bb.minY);
+
+  // entrance side: which gate -> which edge of the drawing. front=bottom, rear=top, left=left, right=right
+  const gateSide = gates ? (gates.front ? "front" : gates.left ? "left" : gates.right ? "right" : gates.rear ? "rear" : "front") : "front";
+
   return (
     <svg width={W} height={H} style={{ background: "#fff", borderRadius: 12, border: `1px solid ${C.border}`, display: "block", margin: "0 auto" }}>
+      {/* room fills + interior walls */}
       {rooms.map((r, i) => {
         const x = sx(r.px), y = sy(r.py + r.ph), w = r.pw * scale, h = r.ph * scale;
         return (
-          <g key={i}>
-            <rect x={x} y={y} width={w} height={h} fill={(r.color || "#999") + "26"} stroke={r.color || "#666"} strokeWidth={1} />
-            {w > 30 && h > 22 && <text x={x + w / 2} y={y + h / 2 - 2} textAnchor="middle" fontSize={Math.min(13, w / 3)}>{r.icon}</text>}
-            {w > 46 && h > 34 && <text x={x + w / 2} y={y + h / 2 + 11} textAnchor="middle" fontSize={8} fontWeight={600} fill={C.text}>{(r.label || "").split(" ")[0]}</text>}
+          <g key={"f" + i}>
+            <rect x={x} y={y} width={w} height={h} fill={(r.color || "#999") + "1E"} stroke="#3A3A3A" strokeWidth={INT} />
           </g>
         );
       })}
+      {/* thick exterior wall (drawn over the room edges) */}
+      <rect x={oL} y={oT} width={oR - oL} height={oB - oT} fill="none" stroke="#1A1A1A" strokeWidth={EXT} />
+
+      {/* room labels: name + real dimensions */}
+      {rooms.map((r, i) => {
+        const x = sx(r.px), y = sy(r.py + r.ph), w = r.pw * scale, h = r.ph * scale;
+        const name = (r.label || "").replace(" Room", "").replace("Bedroom", "Bed");
+        const showName = w > 40 && h > 28;
+        const showDim = w > 50 && h > 40;
+        const showIcon = w > 26 && h > 20;
+        return (
+          <g key={"l" + i}>
+            {showIcon && !showName && <text x={x + w / 2} y={y + h / 2 + 4} textAnchor="middle" fontSize={Math.min(14, w / 2.5)}>{r.icon}</text>}
+            {showName && <text x={x + w / 2} y={y + h / 2 - (showDim ? 4 : -3)} textAnchor="middle" fontSize={Math.min(9.5, w / 5.5)} fontWeight={700} fill={C.text}>{name.toUpperCase()}</text>}
+            {showDim && <text x={x + w / 2} y={y + h / 2 + 9} textAnchor="middle" fontSize={8} fill={C.muted}>{ft(r.wFt)}&#39;×{ft(r.hFt)}&#39;</text>}
+          </g>
+        );
+      })}
+
+      {/* overall building dimensions — bottom (width) */}
+      <g stroke={C.muted} strokeWidth={1}>
+        <line x1={oL} y1={oB + 16} x2={oR} y2={oB + 16} />
+        <line x1={oL} y1={oB + 12} x2={oL} y2={oB + 20} />
+        <line x1={oR} y1={oB + 12} x2={oR} y2={oB + 20} />
+      </g>
+      <text x={(oL + oR) / 2} y={oB + 30} textAnchor="middle" fontSize={10} fontWeight={600} fill={C.text}>{ft(bw)} ft</text>
+      {/* overall building dimensions — left (height) */}
+      <g stroke={C.muted} strokeWidth={1}>
+        <line x1={oL - 16} y1={oT} x2={oL - 16} y2={oB} />
+        <line x1={oL - 20} y1={oT} x2={oL - 12} y2={oT} />
+        <line x1={oL - 20} y1={oB} x2={oL - 12} y2={oB} />
+      </g>
+      <text x={oL - 22} y={(oT + oB) / 2} textAnchor="middle" fontSize={10} fontWeight={600} fill={C.text} transform={`rotate(-90 ${oL - 26} ${(oT + oB) / 2})`}>{ft(bh)} ft</text>
+
+      {/* entrance marker (arrow pointing into the building from the gate side) */}
+      {(() => {
+        const cx = (oL + oR) / 2, cy = (oT + oB) / 2;
+        let ax, ay, dx, dy;
+        if (gateSide === "front") { ax = cx; ay = oB + 8; dx = 0; dy = -1; }
+        else if (gateSide === "rear") { ax = cx; ay = oT - 8; dx = 0; dy = 1; }
+        else if (gateSide === "left") { ax = oL - 8; ay = cy; dx = 1; dy = 0; }
+        else { ax = oR + 8; ay = cy; dx = -1; dy = 0; }
+        return (
+          <g>
+            <circle cx={ax} cy={ay} r={9} fill={C.accent} />
+            <text x={ax} y={ay + 3.5} textAnchor="middle" fontSize={10} fill="#fff" fontWeight={700}>⌂</text>
+            <text x={ax + dx * 0} y={gateSide === "front" ? ay + 18 : gateSide === "rear" ? ay - 12 : ay} dx={gateSide === "left" ? -14 : gateSide === "right" ? 14 : 0} textAnchor="middle" fontSize={7.5} fontWeight={600} fill={C.muted}>ENTRY</text>
+          </g>
+        );
+      })()}
+
+      {/* scale note */}
+      <text x={W - 8} y={H - 8} textAnchor="end" fontSize={8} fill={C.muted}>Approx · not to exact scale</text>
     </svg>
   );
 }
+
 
 // draw a generated layout (rooms placed in their zones)
 function LayoutView({ points, placed, showZones, facing }) {
@@ -679,6 +742,11 @@ export default function App() {
   const [flatsPerFloor, setFlatsPerFloor] = useState(2);
   const [flatBHK, setFlatBHK] = useState(2); // bedrooms per flat
   const [priorities, setPriorities] = useState([]);
+  // ARCHITECT'S BRIEF: spatial intent (connections, staircase, parking)
+  const [connections, setConnections] = useState({ openKitchen: true, poojaVisible: false, masterEnsuite: true, livingToOutside: true });
+  const [stairType, setStairType] = useState("straight"); // straight | l-shaped | u-shaped
+  const [stairSide, setStairSide] = useState("side"); // front | rear | side
+  const [carCount, setCarCount] = useState(1);
   const [projectName, setProjectName] = useState("");
   const [purpose, setPurpose] = useState("residential");
   const [shapeType, setShapeType] = useState("rect");
@@ -786,7 +854,7 @@ export default function App() {
     if (program.guest) list.push({ typeId: "guest", label: "Guest Room" });
     if (program.store) list.push({ typeId: "store", label: "Store" });
     if (program.utility) list.push({ typeId: "utility", label: "Utility/Wash" });
-    if (program.parking) list.push({ typeId: "park", label: "Parking" });
+    if (program.parking && carCount > 0) { for (let i = 0; i < carCount; i++) list.push({ typeId: "park", label: carCount > 1 ? `Parking ${i + 1}` : "Parking" }); }
     if (program.garden) list.push({ typeId: "garden", label: "Front Garden" });
     if (program.balcony) list.push({ typeId: "balcony", label: "Balcony" });
     return list;
@@ -981,7 +1049,7 @@ export default function App() {
     { id: 4, label: "Design", icon: "✨" },
   ];
   const STEP_PHASE = {
-    project: 1, brief1: 1, brief2: 1, brief3: 1, builderUnit: 1, aptSetup: 1,
+    project: 1, brief1: 1, brief2: 1, brief3: 1, brief4: 1, builderUnit: 1, aptSetup: 1,
     input: 2, config: 3, vertical: 3, surround: 2, direction: 2, floor: 3, style: 4, summary: 4,
   };
   const currentPhase = STEP_PHASE[step] || 1;
@@ -1265,15 +1333,74 @@ export default function App() {
           })}
         </div>
         {priorities.includes("vastu") && <div style={{ background: C.selBg, border: `1px solid ${C.purple}55`, borderRadius: 10, padding: 12, marginTop: 14, fontSize: 12, color: C.purple, lineHeight: 1.5 }}>🧭 Vastu mode will be turned on — we will guide room placement by direction.</div>}
-        <button style={{ ...s.btn(), marginTop: 18 }} onClick={finishBrief}>Continue → Your Plot</button>
-        <button style={s.btn("secondary")} onClick={finishBrief}>Skip for now</button>
+        <button style={{ ...s.btn(), marginTop: 18 }} onClick={() => { if (priorities.includes("vastu")) setVastuOn(true); setStep("brief4"); }}>Continue → Layout details</button>
+        <button style={s.btn("secondary")} onClick={finishBrief}>Skip the rest</button>
       </div>
     </div>
   );
 
+  // PHASE 1 — SCREEN 4: ARCHITECT'S BRIEF (connections, staircase, parking)
+  if (step === "brief4") {
+    const CONN = [
+      { id: "openKitchen", label: "Open kitchen connected to dining", icon: "🍳" },
+      { id: "masterEnsuite", label: "Master bedroom with attached bath", icon: "🛁" },
+      { id: "livingToOutside", label: "Living room opens to balcony/garden", icon: "🌿" },
+      { id: "poojaVisible", label: "Pooja room visible from living", icon: "🪔" },
+    ];
+    return (
+      <div style={s.root}>
+        <div style={s.header}>{back(() => setStep("brief3"))}<div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 17, letterSpacing: "-0.02em" }}>Layout details</div><div style={{ color: C.muted, fontSize: 12 }}>Phase 1 · how your home connects</div></div></div>
+        <ProgressArc />
+        <div style={s.body}>
+          <div style={{ fontWeight: 800, fontSize: 27, marginBottom: 6, letterSpacing: "-0.03em", lineHeight: 1.15 }}>How should it connect?</div>
+          <div style={{ color: C.muted, fontSize: 13, marginBottom: 20, lineHeight: 1.5 }}>These are the questions a real architect asks — how rooms relate, where the stairs go, and parking. They shape a much better layout.</div>
+
+          <span style={s.label}>Room connections</span>
+          <div style={{ marginBottom: 20 }}>
+            {CONN.map(c => {
+              const on = connections[c.id];
+              return (
+                <div key={c.id} onClick={() => setConnections(p => ({ ...p, [c.id]: !p[c.id] }))} style={{ display: "flex", alignItems: "center", gap: 10, background: on ? C.selBg : C.card, border: `1px solid ${on ? C.accent : C.border}`, borderRadius: 12, padding: "13px 14px", marginBottom: 8, cursor: "pointer" }}>
+                  <span style={{ fontSize: 17 }}>{c.icon}</span>
+                  <span style={{ flex: 1, fontSize: 13, fontWeight: 600 }}>{c.label}</span>
+                  {toggle(on)}
+                </div>
+              );
+            })}
+          </div>
+
+          <span style={s.label}>Staircase shape</span>
+          <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+            {[["straight", "Straight"], ["l-shaped", "L-shaped"], ["u-shaped", "U-shaped"]].map(([id, lbl]) => (
+              <div key={id} onClick={() => setStairType(id)} style={{ flex: 1, textAlign: "center", padding: "12px 0", borderRadius: 11, border: `1.5px solid ${stairType === id ? C.accent : C.border}`, background: stairType === id ? C.selBg : C.card, cursor: "pointer", fontSize: 12.5, fontWeight: 600 }}>{lbl}</div>
+            ))}
+          </div>
+          <span style={s.label}>Staircase position</span>
+          <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+            {[["front", "Near entry"], ["side", "Along a side"], ["rear", "At the rear"]].map(([id, lbl]) => (
+              <div key={id} onClick={() => setStairSide(id)} style={{ flex: 1, textAlign: "center", padding: "12px 0", borderRadius: 11, border: `1.5px solid ${stairSide === id ? C.accent : C.border}`, background: stairSide === id ? C.selBg : C.card, cursor: "pointer", fontSize: 12.5, fontWeight: 600 }}>{lbl}</div>
+            ))}
+          </div>
+
+          <span style={s.label}>Parking — how many cars?</span>
+          <div style={{ display: "flex", gap: 8, marginBottom: 22 }}>
+            {[0, 1, 2, 3].map(n => (
+              <div key={n} onClick={() => setCarCount(n)} style={{ flex: 1, textAlign: "center", padding: "14px 0", borderRadius: 11, border: `1.5px solid ${carCount === n ? C.accent : C.border}`, background: carCount === n ? C.selBg : C.card, cursor: "pointer" }}>
+                <div style={{ fontWeight: 800, fontSize: 18 }}>{n === 3 ? "3+" : n}</div>
+                <div style={{ color: C.muted, fontSize: 10 }}>{n === 0 ? "none" : n === 1 ? "car" : "cars"}</div>
+              </div>
+            ))}
+          </div>
+
+          <button style={s.btn()} onClick={finishBrief}>Continue → Your Plot</button>
+        </div>
+      </div>
+    );
+  }
+
   if (step === "input") return (
     <div style={s.root}>
-      <div style={s.header}>{back(() => setStep("brief3"))}<div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 17, letterSpacing: "-0.02em" }}>Your Plot</div><div style={{ color: C.muted, fontSize: 12 }}>Phase 2 · your land</div></div></div>
+      <div style={s.header}>{back(() => setStep("brief4"))}<div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 17, letterSpacing: "-0.02em" }}>Your Plot</div><div style={{ color: C.muted, fontSize: 12 }}>Phase 2 · your land</div></div></div>
       <ProgressArc />
       <div style={s.body}>
         <ProjectPill />
@@ -1705,7 +1832,7 @@ export default function App() {
               </div>
             )}
             <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 4 }}>{styleObj.icon} {styleObj.label} — {floorList[layoutFloor]?.label}</div>
-            <SliceView points={points} rooms={placed} facing={facing} />
+            <SliceView points={points} rooms={placed} facing={facing} gates={gates} />
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
               {placed.map((b, k) => <span key={k} style={{ display: "flex", alignItems: "center", gap: 5, color: C.muted, fontSize: 11.5 }}><span style={{ width: 9, height: 9, borderRadius: 2, background: b.color }} />{b.label}{b.zone ? ` · ${b.zone}` : ""}</span>)}
             </div>
