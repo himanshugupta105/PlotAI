@@ -290,7 +290,7 @@ function roomAnchor(typeId, grid) {
 }
 
 // recursively slice `rect` among `items` (each {sqft, anchor, ...}). Returns array of {...item, rect}.
-function sliceRooms(rect, items) {
+function sliceRooms(rect, items, variant = 0) {
   if (items.length === 0) return [];
   if (items.length === 1) return [{ ...items[0], rect: { ...rect } }];
 
@@ -303,13 +303,17 @@ function sliceRooms(rect, items) {
   let cutVertical;
   if (colSpread !== rowSpread) cutVertical = colSpread > rowSpread;
   else cutVertical = rect.w >= rect.h;
+  // VARIANT: produce distinct layouts by biasing the first-level cut direction
+  if (variant === 1) cutVertical = !cutVertical;       // option B: opposite primary axis
+  // variant 2 keeps the natural axis but shifts the split point (handled below)
 
   // sort items along the cut axis by anchor, then split into two groups by area ~half
   const sorted = [...items].sort((a, b) => cutVertical ? a.anchor.col - b.anchor.col : a.anchor.row - b.anchor.row);
   let acc = 0, splitIdx = 1;
+  const halfTarget = variant === 2 ? totalArea * 0.62 : totalArea / 2;
   for (let i = 0; i < sorted.length; i++) {
     acc += sorted[i].sqft;
-    if (acc >= totalArea / 2) { splitIdx = i + 1; break; }
+    if (acc >= halfTarget) { splitIdx = i + 1; break; }
   }
   splitIdx = Math.max(1, Math.min(sorted.length - 1, splitIdx));
   const groupA = sorted.slice(0, splitIdx);
@@ -332,14 +336,14 @@ function sliceRooms(rect, items) {
     if (alt) { // alt vertical
       const wA = rect.w * fA;
       return [
-        ...sliceRooms({ x: rect.x, y: rect.y, w: wA, h: rect.h }, gA),
-        ...sliceRooms({ x: rect.x + wA, y: rect.y, w: rect.w - wA, h: rect.h }, gB),
+        ...sliceRooms({ x: rect.x, y: rect.y, w: wA, h: rect.h }, gA, variant),
+        ...sliceRooms({ x: rect.x + wA, y: rect.y, w: rect.w - wA, h: rect.h }, gB, variant),
       ];
     } else { // alt horizontal (top = high y = North)
       const hA = rect.h * fA;
       return [
-        ...sliceRooms({ x: rect.x, y: rect.y + rect.h - hA, w: rect.w, h: hA }, gA),
-        ...sliceRooms({ x: rect.x, y: rect.y, w: rect.w, h: rect.h - hA }, gB),
+        ...sliceRooms({ x: rect.x, y: rect.y + rect.h - hA, w: rect.w, h: hA }, gA, variant),
+        ...sliceRooms({ x: rect.x, y: rect.y, w: rect.w, h: rect.h - hA }, gB, variant),
       ];
     }
   }
@@ -347,20 +351,20 @@ function sliceRooms(rect, items) {
   if (cutVertical) {
     const wA = rect.w * fracA;
     return [
-      ...sliceRooms({ x: rect.x, y: rect.y, w: wA, h: rect.h }, groupA),
-      ...sliceRooms({ x: rect.x + wA, y: rect.y, w: rect.w - wA, h: rect.h }, groupB),
+      ...sliceRooms({ x: rect.x, y: rect.y, w: wA, h: rect.h }, groupA, variant),
+      ...sliceRooms({ x: rect.x + wA, y: rect.y, w: rect.w - wA, h: rect.h }, groupB, variant),
     ];
   } else {
     // horizontal cut: groupA is North (top, higher y). y grows upward in plot coords.
     const hA = rect.h * fracA;
     return [
-      ...sliceRooms({ x: rect.x, y: rect.y + rect.h - hA, w: rect.w, h: hA }, groupA),
-      ...sliceRooms({ x: rect.x, y: rect.y, w: rect.w, h: rect.h - hA }, groupB),
+      ...sliceRooms({ x: rect.x, y: rect.y + rect.h - hA, w: rect.w, h: hA }, groupA, variant),
+      ...sliceRooms({ x: rect.x, y: rect.y, w: rect.w, h: rect.h - hA }, groupB, variant),
     ];
   }
 }
 
-function sliceLayout(points, facing, rooms, cores) {
+function sliceLayout(points, facing, rooms, cores, variant = 0) {
   if (!points) return [];
   const grid = rotatedGrid(facing);
   const bb = bboxOf(points);
@@ -373,7 +377,7 @@ function sliceLayout(points, facing, rooms, cores) {
     items.push({ ...meta, typeId: r.typeId, sqft: Math.max(20, r.sqft), uid: r.uid, label: r.customLabel || meta.label, color: meta.color, icon: meta.icon, anchor: roomAnchor(r.typeId, grid) });
   });
   if (items.length === 0) return [];
-  const sliced = sliceRooms(rect, items);
+  const sliced = sliceRooms(rect, items, variant);
   // attach real dimensions (feet) — plot units are already feet in this app
   return sliced.map(s => ({
     ...s,
@@ -416,6 +420,38 @@ function SliceView({ points, rooms, facing, gates }) {
       })}
       {/* thick exterior wall (drawn over the room edges) */}
       <rect x={oL} y={oT} width={oR - oL} height={oB - oT} fill="none" stroke="#1A1A1A" strokeWidth={EXT} />
+
+      {/* DOORS: a gap + swing arc on the wall facing the building interior */}
+      {rooms.filter(r => !["park", "garden", "balcony", "court", "shaft", "terrace"].includes(r.typeId)).map((r, i) => {
+        const x = sx(r.px), y = sy(r.py + r.ph), w = r.pw * scale, h = r.ph * scale;
+        if (w < 18 || h < 18) return null;
+        const bcx = (oL + oR) / 2, bcy = (oT + oB) / 2;
+        const rcx = x + w / 2, rcy = y + h / 2;
+        // pick the wall edge facing the building center
+        const dxC = bcx - rcx, dyC = bcy - rcy;
+        const doorLen = Math.min(16, Math.min(w, h) * 0.45);
+        let hx, hy, ax, ay, sweep; // hinge point, arc end
+        if (Math.abs(dxC) > Math.abs(dyC)) {
+          // door on left or right wall
+          const wallX = dxC > 0 ? x + w : x;
+          hy = rcy - doorLen / 2;
+          hx = wallX;
+          ax = wallX + (dxC > 0 ? doorLen : -doorLen);
+          ay = hy;
+          return <g key={"d" + i} stroke={C.muted} strokeWidth={1} fill="none">
+            <line x1={wallX} y1={rcy - doorLen / 2} x2={wallX} y2={rcy + doorLen / 2} stroke="#fff" strokeWidth={INT + 1.5} />
+            <path d={`M ${hx} ${rcy + doorLen / 2} A ${doorLen} ${doorLen} 0 0 ${dxC > 0 ? 0 : 1} ${ax} ${ay + doorLen / 2}`} />
+          </g>;
+        } else {
+          // door on top or bottom wall
+          const wallY = dyC > 0 ? y + h : y;
+          hx = rcx - doorLen / 2;
+          return <g key={"d" + i} stroke={C.muted} strokeWidth={1} fill="none">
+            <line x1={rcx - doorLen / 2} y1={wallY} x2={rcx + doorLen / 2} y2={wallY} stroke="#fff" strokeWidth={INT + 1.5} />
+            <path d={`M ${rcx + doorLen / 2} ${wallY} A ${doorLen} ${doorLen} 0 0 ${dyC > 0 ? 1 : 0} ${rcx - doorLen / 2 + doorLen} ${wallY + (dyC > 0 ? doorLen : -doorLen)}`} />
+          </g>;
+        }
+      })}
 
       {/* room labels: name + real dimensions */}
       {rooms.map((r, i) => {
@@ -775,6 +811,7 @@ export default function App() {
   const [customName, setCustomName] = useState("");
   const [customSize, setCustomSize] = useState(100);
   const [activeStyle, setActiveStyle] = useState(null);
+  const [layoutVariant, setLayoutVariant] = useState(0);
   const [layoutFloor, setLayoutFloor] = useState(0);
   const [lockMsg, setLockMsg] = useState("");
 
@@ -1790,7 +1827,7 @@ export default function App() {
       ...(effectiveCourtyard > 0 ? [{ ...COURTYARD, sqft: effectiveCourtyard }] : []),
       ...(shaftRecommended ? [{ ...SHAFT, sqft: SHAFT.min }] : [])];
     const roomsForLayout = f.fullParking ? [{ uid: 9999, typeId: "park", sqft: Math.max(60, footprint - coreArea) }] : f.rooms;
-    const placed = activeStyle ? sliceLayout(points, facing, roomsForLayout, cores) : [];
+    const placed = activeStyle ? sliceLayout(points, facing, roomsForLayout, cores, layoutVariant) : [];
     const styleObj = STYLES.find(x => x.id === activeStyle);
     const reason = {
       vastu: "Kitchen placed toward the South-East (fire), master bedroom in the stable South-West, pooja in the sacred North-East, toilets kept away from the North-East.",
@@ -1831,7 +1868,15 @@ export default function App() {
                 ))}
               </div>
             )}
-            <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 4 }}>{styleObj.icon} {styleObj.label} — {floorList[layoutFloor]?.label}</div>
+            <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 8 }}>{styleObj.icon} {styleObj.label} — {floorList[layoutFloor]?.label}</div>
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ color: C.muted, fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Layout options — tap to compare</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                {[["A", 0], ["B", 1], ["C", 2]].map(([lbl, v]) => (
+                  <div key={v} onClick={() => setLayoutVariant(v)} style={{ flex: 1, textAlign: "center", padding: "10px 0", borderRadius: 10, border: `1.5px solid ${layoutVariant === v ? C.accent : C.border}`, background: layoutVariant === v ? C.accent : C.card, color: layoutVariant === v ? "#fff" : C.text, cursor: "pointer", fontSize: 13, fontWeight: 700 }}>Option {lbl}</div>
+                ))}
+              </div>
+            </div>
             <SliceView points={points} rooms={placed} facing={facing} gates={gates} />
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
               {placed.map((b, k) => <span key={k} style={{ display: "flex", alignItems: "center", gap: 5, color: C.muted, fontSize: 11.5 }}><span style={{ width: 9, height: 9, borderRadius: 2, background: b.color }} />{b.label}{b.zone ? ` · ${b.zone}` : ""}</span>)}
