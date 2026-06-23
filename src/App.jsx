@@ -767,15 +767,16 @@ export default function App() {
     const t2 = setTimeout(() => setShowSplash(false), 2700);
     return () => { clearTimeout(t1); clearTimeout(t2); };
   }, []);
-  // SCROLL-TO-TOP: every time the step changes, jump to the top of the page
-  useEffect(() => {
-    try { window.scrollTo({ top: 0, left: 0, behavior: "auto" }); } catch (e) { window.scrollTo(0, 0); }
-  }, [step]);
   // VIEWPORT: ensure proper mobile scaling (safety net if index.html lacks it)
   useEffect(() => {
     let m = document.querySelector('meta[name="viewport"]');
     if (!m) { m = document.createElement("meta"); m.name = "viewport"; document.head.appendChild(m); }
     m.content = "width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1";
+    // prevent any horizontal scroll (the black side-screen) at the document level
+    document.documentElement.style.overflowX = "hidden";
+    document.body.style.overflowX = "hidden";
+    document.body.style.maxWidth = "100%";
+    document.body.style.margin = "0";
   }, []);
   // PHASE 1 — THE BRIEF
   const [familyType, setFamilyType] = useState(null);
@@ -818,6 +819,18 @@ export default function App() {
   const [quality, setQuality] = useState("standard");
   const [floorData, setFloorData] = useState([]);
   const [cur, setCur] = useState(0);
+  // SCROLL-TO-TOP: every time the step OR floor changes, jump to the top of the page
+  useEffect(() => {
+    const doScroll = () => {
+      try { window.scrollTo({ top: 0, left: 0, behavior: "auto" }); } catch (e) { window.scrollTo(0, 0); }
+      if (document.scrollingElement) document.scrollingElement.scrollTop = 0;
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+    };
+    doScroll();
+    const t = setTimeout(doScroll, 30); // run again after the new page paints
+    return () => clearTimeout(t);
+  }, [step, cur]);
   const [customName, setCustomName] = useState("");
   const [customSize, setCustomSize] = useState(100);
   const [activeStyle, setActiveStyle] = useState(null);
@@ -1074,7 +1087,7 @@ export default function App() {
   };
 
   const s = {
-    root: { fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif", background: C.bg, minHeight: "100vh", color: C.text, width: "100%", maxWidth: 600, margin: "0 auto", paddingBottom: "max(56px, env(safe-area-inset-bottom))", letterSpacing: "-0.01em", boxSizing: "border-box" },
+    root: { fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif", background: C.bg, minHeight: "100vh", color: C.text, width: "100%", maxWidth: 600, margin: "0 auto", paddingBottom: "max(56px, env(safe-area-inset-bottom))", letterSpacing: "-0.01em", boxSizing: "border-box", overflowX: "hidden" },
     header: { background: C.bg, padding: "20px 24px 14px", display: "flex", alignItems: "center", gap: 12 },
     logo: { width: 34, height: 34, borderRadius: 9, background: C.accent, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 },
     body: { padding: "8px clamp(16px, 5vw, 32px)" },
@@ -1796,8 +1809,8 @@ export default function App() {
             <div style={{ background: C.surface, border: `1.5px dashed ${C.accent}66`, borderRadius: 12, padding: 12, marginBottom: 14 }}>
               <div style={{ color: C.accent, fontSize: 12, fontWeight: 700, marginBottom: 8 }}>✏️ Add your own space</div>
               <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                <input value={customName} onChange={e => setCustomName(e.target.value)} placeholder="Name (e.g. Home Theatre, Bar)" style={{ flex: 2, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 9, color: C.text, fontSize: 13, padding: "9px 12px", outline: "none", boxSizing: "border-box" }} />
-                <input value={customSize} onChange={e => setCustomSize(Math.max(20, +e.target.value || 0))} type="number" style={{ flex: 1, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 9, color: C.text, fontSize: 13, padding: "9px 8px", outline: "none", boxSizing: "border-box", textAlign: "center" }} />
+                <input value={customName} onChange={e => setCustomName(e.target.value)} placeholder="Name (e.g. Home Theatre, Bar)" style={{ flex: 2, minWidth: 0, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 9, color: C.text, fontSize: 13, padding: "9px 12px", outline: "none", boxSizing: "border-box" }} />
+                <input value={customSize} onChange={e => setCustomSize(Math.max(20, +e.target.value || 0))} type="number" style={{ flex: 1, minWidth: 0, width: 60, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 9, color: C.text, fontSize: 13, padding: "9px 8px", outline: "none", boxSizing: "border-box", textAlign: "center" }} />
               </div>
               <button onClick={addCustomRoom} disabled={!customName.trim() || (footprint - coreArea - roomsArea) < customSize} style={{ width: "100%", padding: "9px 0", borderRadius: 9, border: "none", fontWeight: 700, fontSize: 12.5, cursor: customName.trim() ? "pointer" : "not-allowed", background: customName.trim() && (footprint - coreArea - roomsArea) >= customSize ? C.accent : C.border, color: customName.trim() && (footprint - coreArea - roomsArea) >= customSize ? "#fff" : C.muted }}>
                 + Add "{customName.trim() || "your space"}" ({customSize} sqft)
