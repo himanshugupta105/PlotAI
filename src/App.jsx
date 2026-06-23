@@ -846,6 +846,94 @@ function SliceView({ points, rooms, facing, gates }) {
         }
       })}
 
+      {/* FURNITURE & FIXTURES: simple architectural symbols drawn inside each room */}
+      {rooms.map((r, i) => {
+        if (r.open || r.isHall) return null;
+        const rx = sx(r.px), ry = sy(r.py + r.ph), rw = r.pw * scale, rh = r.ph * scale;
+        if (rw < 22 || rh < 16) return null; // too small to furnish legibly
+        const t = r.typeId;
+        const FL = "#9AA0A6", FS = 0.9; // furniture line color + stroke
+        const pad = Math.min(rw, rh) * 0.12;
+        const els = [];
+        const rect = (x, y, w, h, fill = "none", extra = {}) => els.push(<rect key={els.length} x={x} y={y} width={w} height={h} fill={fill} stroke={FL} strokeWidth={FS} {...extra} />);
+        const line = (x1, y1, x2, y2) => els.push(<line key={els.length} x1={x1} y1={y1} x2={x2} y2={y2} stroke={FL} strokeWidth={FS} />);
+        const circ = (cx, cy, rr) => els.push(<circle key={els.length} cx={cx} cy={cy} r={rr} fill="none" stroke={FL} strokeWidth={FS} />);
+        const cx = rx + rw / 2, cy = ry + rh / 2;
+
+        if (t === "master" || t === "bed" || t === "kids" || t === "guest") {
+          // bed: headboard against the top wall, two pillows; + wardrobe strip on a side wall
+          const bw = Math.min(rw * 0.5, rh * 0.62), bh = Math.min(rh * 0.6, bw * 1.3);
+          const bx = rx + pad, by = ry + pad;
+          rect(bx, by, bw, bh, "#9AA0A60F"); // mattress
+          rect(bx, by, bw, bh * 0.18, "#9AA0A622"); // headboard band
+          line(bx + bw * 0.12, by + bh * 0.04, bx + bw * 0.12, by + bh * 0.16); // pillow split
+          // wardrobe along right wall if room wide enough
+          if (rw > bw + pad * 3) { rect(rx + rw - pad - Math.min(10, rw * 0.12), ry + pad, Math.min(10, rw * 0.12), rh * 0.5, "#9AA0A618"); }
+        } else if (t === "living" || t === "reception") {
+          // sofa (L bottom-left) + coffee table + TV unit on opposite wall
+          const sofaW = rw * 0.42, sofaH = Math.max(7, rh * 0.16);
+          rect(rx + pad, ry + rh - pad - sofaH, sofaW, sofaH, "#9AA0A618"); // sofa back
+          line(rx + pad, ry + rh - pad - sofaH * 0.4, rx + pad + sofaW, ry + rh - pad - sofaH * 0.4); // seat line
+          rect(cx - rw * 0.1, cy, rw * 0.2, rh * 0.12, "none"); // coffee table
+          rect(rx + pad, ry + pad, rw * 0.5, Math.max(4, rh * 0.06), "#9AA0A622"); // TV unit on top wall
+        } else if (t === "kitchen" || t === "pantry") {
+          // L-counter along top + left wall, with sink (circle) and stove (4 burners)
+          const cd = Math.max(6, Math.min(rw, rh) * 0.16); // counter depth
+          rect(rx + pad, ry + pad, rw - pad * 2, cd, "#9AA0A622"); // top counter run
+          rect(rx + pad, ry + pad, cd, rh - pad * 2, "#9AA0A622"); // left counter run
+          circ(rx + pad + (rw - pad * 2) * 0.4, ry + pad + cd / 2, cd * 0.28); // sink
+          const stoveX = rx + pad + (rw - pad * 2) * 0.72;
+          [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([ox, oy]) => circ(stoveX + ox * cd * 0.22, ry + pad + cd / 2 + oy * cd * 0.22, cd * 0.1)); // burners
+        } else if (t === "bath" || t === "ensuite") {
+          // WC (rounded) + basin (circle) + shower square (if room large enough)
+          const u = Math.max(5, Math.min(rw, rh) * 0.26);
+          els.push(<rect key={els.length} x={rx + pad} y={ry + rh - pad - u} width={u * 0.7} height={u} rx={u * 0.25} fill="#9AA0A618" stroke={FL} strokeWidth={FS} />); // WC
+          circ(rx + rw - pad - u * 0.4, ry + pad + u * 0.4, u * 0.35); // basin
+          if (rw > u * 2.4 && rh > u * 1.8) { rect(rx + rw - pad - u, ry + rh - pad - u, u, u, "#9AA0A60F"); line(rx + rw - pad - u, ry + rh - pad - u, rx + rw - pad, ry + rh - pad); } // shower
+        } else if (t === "dining") {
+          // table center + chairs
+          const tw = rw * 0.4, th = rh * 0.3;
+          rect(cx - tw / 2, cy - th / 2, tw, th, "#9AA0A618");
+          [[-1, 0], [1, 0], [0, -1], [0, 1]].forEach(([ox, oy]) => rect(cx + ox * (tw / 2 + 3) - 2.5, cy + oy * (th / 2 + 3) - 2.5, 5, 5, "none"));
+        } else if (t === "pooja") {
+          rect(cx - rw * 0.18, ry + pad, rw * 0.36, Math.max(4, rh * 0.12), "#9AA0A622"); // altar shelf
+        } else if (t === "store" || t === "utility") {
+          rect(rx + pad, ry + pad, rw - pad * 2, Math.max(4, rh * 0.14), "#9AA0A618"); // shelf
+          if (t === "utility") circ(cx, cy + rh * 0.15, Math.min(rw, rh) * 0.16); // washer drum
+        } else if (t === "office" || t === "cabin" || t === "conference") {
+          const tw = rw * 0.5, th = rh * 0.22;
+          rect(cx - tw / 2, cy - th / 2, tw, th, "#9AA0A618"); // desk/table
+        } else if (t === "park") {
+          // parking: car outline
+          const cw = Math.min(rw * 0.5, rh * 0.85), ch = cw * 0.45;
+          els.push(<rect key={els.length} x={cx - cw / 2} y={cy - ch / 2} width={cw} height={ch} rx={ch * 0.25} fill="none" stroke={FL} strokeWidth={FS} />);
+        }
+        return <g key={"furn" + i}>{els}</g>;
+      })}
+
+      {/* WINDOWS: short breaks on exterior walls for perimeter habitable rooms */}
+      {rooms.map((r, i) => {
+        if (r.open || r.isHall) return null;
+        const habitable = ["master", "bed", "kids", "guest", "living", "kitchen", "dining", "office", "cabin", "reception", "conference"].includes(r.typeId);
+        if (!habitable) return null;
+        const x = sx(r.px), y = sy(r.py + r.ph), w = r.pw * scale, h = r.ph * scale;
+        const eps = 1.2;
+        const wins = [];
+        const onLeft = Math.abs(r.px - bb.minX) < eps;
+        const onRight = Math.abs((r.px + r.pw) - bb.maxX) < eps;
+        const onBottom = Math.abs(r.py - bb.minY) < eps;
+        const onTop = Math.abs((r.py + r.ph) - bb.maxY) < eps;
+        const win = (x1, y1, x2, y2) => {
+          wins.push(<line key={wins.length} x1={x1} y1={y1} x2={x2} y2={y2} stroke="#fff" strokeWidth={EXT} />);
+          wins.push(<line key={wins.length} x1={x1} y1={y1} x2={x2} y2={y2} stroke={C.accent} strokeWidth={1.4} />);
+        };
+        if (onTop && w > 24) win(x + w * 0.32, y, x + w * 0.68, y);
+        if (onBottom && w > 24) win(x + w * 0.32, y + h, x + w * 0.68, y + h);
+        if (onLeft && h > 24) win(x, y + h * 0.32, x, y + h * 0.68);
+        if (onRight && h > 24) win(x + w, y + h * 0.32, x + w, y + h * 0.68);
+        return wins.length ? <g key={"win" + i}>{wins}</g> : null;
+      })}
+
       {/* room labels: name + real dimensions */}
       {rooms.map((r, i) => {
         const x = sx(r.px), y = sy(r.py + r.ph), w = r.pw * scale, h = r.ph * scale;
