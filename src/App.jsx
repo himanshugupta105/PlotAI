@@ -364,6 +364,175 @@ function sliceRooms(rect, items, variant = 0) {
   }
 }
 
+// ============================================================
+// PlotAI v2 ENGINE — shape-aware, zoned, adjacency-driven layout
+// (tested in isolation: perfect tiling, bonded ensuite, real plot shape)
+// ============================================================
+const V2SPEC = {
+  living:  { zone: "public",  minW: 10, light: "perimeter", target: 200 },
+  dining:  { zone: "public",  minW: 7,  light: "core",      target: 100 },
+  guest:   { zone: "public",  minW: 9,  light: "perimeter", target: 120 },
+  master:  { zone: "private", minW: 10, light: "perimeter", target: 168, ensuite: true },
+  bed:     { zone: "private", minW: 9,  light: "perimeter", target: 120 },
+  kids:    { zone: "private", minW: 8,  light: "perimeter", target: 110 },
+  bath:    { zone: "service", minW: 4,  light: "core",      target: 45 },
+  ensuite: { zone: "private", minW: 4,  light: "core",      target: 40 },
+  kitchen: { zone: "service", minW: 7,  light: "perimeter", target: 100 },
+  utility: { zone: "service", minW: 4,  light: "core",      target: 40 },
+  pooja:   { zone: "public",  minW: 4,  light: "core",      target: 30 },
+  store:   { zone: "service", minW: 4,  light: "core",      target: 36 },
+  park:    { zone: "service", minW: 8,  light: "perimeter", target: 180 },
+  balcony: { zone: "public",  minW: 4,  light: "perimeter", target: 50 },
+  office:  { zone: "private", minW: 8,  light: "perimeter", target: 100 },
+  servant: { zone: "service", minW: 6,  light: "core",      target: 64 },
+  terrace: { zone: "service", minW: 6,  light: "perimeter", target: 120 },
+  stairs:  { zone: "service", minW: 5,  light: "core",      target: 60 },
+  lift:    { zone: "service", minW: 5,  light: "core",      target: 30 },
+  reception: { zone: "public", minW: 9, light: "perimeter", target: 140 },
+  cabin:   { zone: "private", minW: 8,  light: "perimeter", target: 100 },
+  conference: { zone: "public", minW: 10, light: "perimeter", target: 180 },
+  pantry:  { zone: "service", minW: 5,  light: "core",      target: 50 },
+};
+const V2SMALL = new Set(["bath", "store", "utility", "pooja"]);
+
+function v2BuildableRect(points, sb) {
+  const bb = bboxOf(points);
+  return { x: bb.minX + sb.left, y: bb.minY + sb.front, w: (bb.maxX - bb.minX) - sb.left - sb.right, h: (bb.maxY - bb.minY) - sb.front - sb.rear };
+}
+
+function v2Decompose(shapeType, points, sb, lMeta) {
+  const build = v2BuildableRect(points, sb);
+  if (shapeType !== "lshape" || !lMeta) return { rects: [build], open: [], kind: shapeType };
+  const { W, D, nw, nd } = lMeta;
+  const splitY = Math.max(build.y, D - nd);
+  const bottom = { x: build.x, y: build.y, w: build.w, h: splitY - build.y };
+  const topH = (build.y + build.h) - splitY;
+  const topLeftW = (W - nw) - build.x;
+  const topLeft = { x: build.x, y: splitY, w: Math.max(0, topLeftW), h: Math.max(0, topH) };
+  const openRect = { x: W - nw, y: splitY, w: (build.x + build.w) - (W - nw), h: Math.max(0, topH), open: true };
+  const rects = [bottom, topLeft].filter(r => r.w > 2 && r.h > 2);
+  const open = (openRect.w > 2 && openRect.h > 2) ? [openRect] : [];
+  return { rects, open, kind: "lshape" };
+}
+
+function v2Slice(rect, items, depth = 0) {
+  if (items.length === 0) return [];
+  if (items.length === 1) return [{ ...items[0], rect: { ...rect } }];
+  const total = items.reduce((a, b) => a + b.sqft, 0);
+  const cutVertical = rect.w >= rect.h;
+  const sideLen = cutVertical ? rect.w : rect.h, otherLen = cutVertical ? rect.h : rect.w;
+  const sorted = [...items];
+  let acc = 0, splitIdx = 1, bestErr = Infinity;
+  for (let i = 1; i < sorted.length; i++) {
+    acc += sorted[i - 1].sqft;
+    const fA = acc / total, aLen = sideLen * fA, bLen = sideLen * (1 - fA);
+    const arA = Math.max(aLen, otherLen) / Math.max(0.1, Math.min(aLen, otherLen));
+    const arB = Math.max(bLen, otherLen) / Math.max(0.1, Math.min(bLen, otherLen));
+    const err = Math.abs(fA - 0.5) + (arA + arB) * 0.05;
+    if (err < bestErr) { bestErr = err; splitIdx = i; }
+  }
+  splitIdx = Math.max(1, Math.min(sorted.length - 1, splitIdx));
+  const A = sorted.slice(0, splitIdx), B = sorted.slice(splitIdx);
+  let fracA = A.reduce((a, b) => a + b.sqft, 0) / total;
+  const MINSTRIP = Math.min(6, sideLen * 0.28), minFrac = MINSTRIP / sideLen, maxFrac = 1 - minFrac;
+  if (minFrac < maxFrac) fracA = Math.max(minFrac, Math.min(maxFrac, fracA));
+  if (cutVertical) {
+    const wA = rect.w * fracA;
+    return [...v2Slice({ x: rect.x, y: rect.y, w: wA, h: rect.h }, A, depth + 1), ...v2Slice({ x: rect.x + wA, y: rect.y, w: rect.w - wA, h: rect.h }, B, depth + 1)];
+  } else {
+    const hA = rect.h * fracA;
+    return [...v2Slice({ x: rect.x, y: rect.y, w: rect.w, h: hA }, A, depth + 1), ...v2Slice({ x: rect.x, y: rect.y + hA, w: rect.w, h: rect.h - hA }, B, depth + 1)];
+  }
+}
+
+function v2CarveEnsuite(mp) {
+  const r = mp.rect, MIN_EN_W = 4.5, MIN_BED_AFTER = 8.5;
+  const longSide = Math.max(r.w, r.h), shortSide = Math.min(r.w, r.h);
+  if (shortSide < MIN_BED_AFTER || longSide < MIN_EN_W + MIN_BED_AFTER) return [mp];
+  let en = Math.max(MIN_EN_W, Math.min(V2SPEC.ensuite.target / shortSide, longSide * 0.32));
+  if (longSide - en < MIN_BED_AFTER) en = longSide - MIN_BED_AFTER;
+  if (r.w >= r.h) return [{ ...mp, rect: { x: r.x, y: r.y, w: r.w - en, h: r.h } }, { typeId: "ensuite", label: "Ensuite", rect: { x: r.x + (r.w - en), y: r.y, w: en, h: r.h }, bondedTo: "master", service: true }];
+  return [{ ...mp, rect: { x: r.x, y: r.y + en, w: r.w, h: r.h - en } }, { typeId: "ensuite", label: "Ensuite", rect: { x: r.x, y: r.y, w: r.w, h: en }, bondedTo: "master", service: true }];
+}
+
+function v2PlaceFloor(decomp, rooms) {
+  const enriched = rooms.map(r => ({ ...r, spec: V2SPEC[r.typeId] || V2SPEC.bed, zone: (V2SPEC[r.typeId] || V2SPEC.bed).zone }));
+  const zones = { public: [], private: [], service: [] };
+  enriched.forEach(r => zones[r.zone].push(r));
+  const rects = decomp.rects, out = [];
+  const placeZoneRooms = (rect, roomList) => {
+    if (roomList.length === 0) return;
+    const bigRooms = roomList.filter(r => !V2SMALL.has(r.typeId));
+    const smallRooms = roomList.filter(r => V2SMALL.has(r.typeId));
+    const sizeOf = (r) => Math.max(r.spec.minW * r.spec.minW, r.spec.target);
+    let bigItems = bigRooms.map(r => ({ typeId: r.typeId, label: r.label || r.typeId, sqft: sizeOf(r) }));
+    let smallItems = smallRooms.map(r => ({ typeId: r.typeId, label: r.label || r.typeId, sqft: sizeOf(r), minW: r.spec.minW }));
+    let bigRect = { ...rect };
+    if (smallItems.length > 0) {
+      const smallSum = smallItems.reduce((a, x) => a + x.sqft, 0);
+      const alongX = rect.w >= rect.h, wallLen = alongX ? rect.w : rect.h;
+      let bandDepth = Math.max(5.5, smallSum / wallLen);
+      bandDepth = Math.min(bandDepth, (alongX ? rect.h : rect.w) * 0.42);
+      const neededLen = Math.min(wallLen, smallSum / bandDepth);
+      if (alongX) {
+        let cx = rect.x; const perScale = neededLen / smallItems.reduce((a, x) => a + x.sqft / bandDepth, 0);
+        smallItems.forEach(it => { const w = (it.sqft / bandDepth) * perScale; out.push({ typeId: it.typeId, label: it.label, rect: { x: cx, y: rect.y, w, h: bandDepth }, service: true }); cx += w; });
+        if (neededLen < rect.w - 2) out.push({ typeId: "hall", label: "Hall", rect: { x: rect.x + neededLen, y: rect.y, w: rect.w - neededLen, h: bandDepth }, isHall: true });
+        bigRect = { x: rect.x, y: rect.y + bandDepth, w: rect.w, h: rect.h - bandDepth };
+      } else {
+        let cy = rect.y; const perScale = neededLen / smallItems.reduce((a, x) => a + x.sqft / bandDepth, 0);
+        smallItems.forEach(it => { const h = (it.sqft / bandDepth) * perScale; out.push({ typeId: it.typeId, label: it.label, rect: { x: rect.x, y: cy, w: bandDepth, h }, service: true }); cy += h; });
+        if (neededLen < rect.h - 2) out.push({ typeId: "hall", label: "Hall", rect: { x: rect.x, y: rect.y + neededLen, w: bandDepth, h: rect.h - neededLen }, isHall: true });
+        bigRect = { x: rect.x + bandDepth, y: rect.y, w: rect.w - bandDepth, h: rect.h };
+      }
+    }
+    const bigArea = bigRect.w * bigRect.h;
+    let bigSum = bigItems.reduce((a, x) => a + x.sqft, 0);
+    if (bigSum > bigArea) { const sc = bigArea / bigSum; bigItems.forEach(it => it.sqft *= sc); }
+    else if (bigArea - bigSum > bigArea * 0.08) { bigItems.push({ typeId: "hall", label: "Hall", sqft: bigArea - bigSum, isHall: true }); }
+    else { const sc = bigArea / bigSum; bigItems.forEach(it => it.sqft *= sc); }
+    if (bigItems.length === 0) return;
+    v2Slice(bigRect, bigItems).forEach(p => {
+      if (p.typeId === "master" && V2SPEC.master.ensuite) v2CarveEnsuite(p).forEach(q => out.push(q));
+      else out.push(p);
+    });
+  };
+  if (rects.length >= 2) {
+    placeZoneRooms(rects[1], zones.private);
+    placeZoneRooms(rects[0], [...zones.public, ...zones.service]);
+  } else {
+    const r = rects[0] || { x: 0, y: 0, w: 1, h: 1 };
+    const privSq = zones.private.reduce((a, x) => a + (V2SPEC[x.typeId] || V2SPEC.bed).target, 0) + V2SPEC.ensuite.target;
+    const pubSq = [...zones.public, ...zones.service].reduce((a, x) => a + (V2SPEC[x.typeId] || V2SPEC.bed).target, 0);
+    const totalSq = privSq + pubSq || 1, privFrac = privSq / totalSq, privH = r.h * privFrac;
+    placeZoneRooms({ x: r.x, y: r.y + (r.h - privH), w: r.w, h: privH }, zones.private);
+    placeZoneRooms({ x: r.x, y: r.y, w: r.w, h: r.h - privH }, [...zones.public, ...zones.service]);
+  }
+  decomp.open.forEach(o => out.push({ typeId: "garden", label: "Garden / Open", rect: { x: o.x, y: o.y, w: o.w, h: o.h }, open: true }));
+  return out;
+}
+
+// adapter: run v2 engine and return rooms in the px/py/pw/ph format SliceView + vastuScore expect
+function sliceLayoutV2(points, facing, rooms, cores, shapeType, sb, lMeta) {
+  // fold cores (stairs/lift/etc) into the room list so they get placed too
+  const coreRooms = (cores || []).map(c => ({ typeId: c.id || c.typeId || "stairs", sqft: Math.max(20, c.sqft || 60), label: c.label }));
+  const allRooms = [...rooms, ...coreRooms];
+  const decomp = v2Decompose(shapeType, points, sb, lMeta);
+  const placed = v2PlaceFloor(decomp, allRooms);
+  // place cores (stairs/lift) into the first buildable rect's corner as a small reserved block
+  const out = placed.map(p => {
+    let meta = ROOMS[p.typeId];
+    if (p.typeId === "ensuite") meta = { label: "Ensuite", color: ROOMS.bath.color, icon: ROOMS.bath.icon };
+    else if (p.typeId === "kids") meta = ROOMS.bed ? { label: "Kids Room", color: ROOMS.bed.color, icon: ROOMS.bed.icon } : null;
+    else if (p.typeId === "stairs" && typeof CORE !== "undefined") meta = { label: "Staircase", color: CORE.stairs.color, icon: CORE.stairs.icon };
+    else if (p.typeId === "lift" && typeof CORE !== "undefined") meta = { label: "Lift", color: CORE.lift.color, icon: CORE.lift.icon };
+    if (!meta) meta = p.isHall ? { label: "Hall", color: "#C9C9C2", icon: "" } : p.open ? { label: "Open", color: "#86B049", icon: "🌳" } : { label: p.typeId, color: "#999", icon: "" };
+    return { typeId: p.typeId, label: p.label || meta.label, color: meta.color, icon: meta.icon, service: p.service, isHall: p.isHall, open: p.open, bondedTo: p.bondedTo,
+      px: p.rect.x, py: p.rect.y, pw: p.rect.w, ph: p.rect.h, wFt: Math.round(p.rect.w), hFt: Math.round(p.rect.h) };
+  });
+  return { rooms: out, decomp };
+}
+
 function sliceLayout(points, facing, rooms, cores, variant = 0) {
   if (!points) return [];
   const grid = rotatedGrid(facing);
@@ -386,7 +555,126 @@ function sliceLayout(points, facing, rooms, cores, variant = 0) {
   }));
 }
 
+// ===== APARTMENT ENGINE: divide floor into N flat-zones, slice each flat independently =====
+function sliceApartmentLayout(points, facing, rooms, cores, variant = 0) {
+  if (!points) return [];
+  const grid = rotatedGrid(facing);
+  const bb = bboxOf(points);
+  const full = { x: bb.minX, y: bb.minY, w: bb.maxX - bb.minX, h: bb.maxY - bb.minY };
+  // group rooms by flatId
+  const flatIds = [...new Set(rooms.map(r => r.flatId).filter(Boolean))].sort((a, b) => a - b);
+  if (flatIds.length === 0) return sliceLayout(points, facing, rooms, cores, variant); // fallback
+
+  const out = [];
+  // reserve a corridor + staircase strip along one edge (the entry/front side = low y)
+  const coreSqft = cores.reduce((a, c) => a + Math.max(20, c.sqft), 0);
+  const corridorFrac = Math.min(0.22, Math.max(0.10, (coreSqft / (full.w * full.h)) + 0.06));
+  // decide split orientation: divide flats along the longer axis for better proportions
+  const flatsAlongX = full.w >= full.h;
+  // corridor runs along the bottom (low y), flats sit above it
+  const corridorH = full.h * corridorFrac;
+  const corridorRect = { x: full.x, y: full.y, w: full.w, h: corridorH };
+  const flatsArea = { x: full.x, y: full.y + corridorH, w: full.w, h: full.h - corridorH };
+
+  // place cores (staircase/lift) inside the corridor strip
+  let cx = corridorRect.x;
+  cores.forEach(c => {
+    const cw = Math.max(20, c.sqft) / Math.max(1, corridorRect.h);
+    out.push({ ...c, typeId: c.id || c.typeId, label: c.label, color: c.color, icon: c.icon, isCore: true, rect: { x: cx, y: corridorRect.y, w: Math.min(cw, corridorRect.w), h: corridorRect.h }, px: cx, py: corridorRect.y, pw: Math.min(cw, corridorRect.w), ph: corridorRect.h, wFt: Math.round(Math.min(cw, corridorRect.w)), hFt: Math.round(corridorRect.h) });
+    cx += cw;
+  });
+  // a corridor label block (the remaining corridor space)
+  if (cx < corridorRect.x + corridorRect.w - 2) {
+    out.push({ typeId: "corridor", label: "Common Corridor", color: "#A0A09A", icon: "🚶", rect: { x: cx, y: corridorRect.y, w: corridorRect.x + corridorRect.w - cx, h: corridorRect.h }, px: cx, py: corridorRect.y, pw: corridorRect.x + corridorRect.w - cx, ph: corridorRect.h, wFt: Math.round(corridorRect.x + corridorRect.w - cx), hFt: Math.round(corridorRect.h), isCorridor: true });
+  }
+
+  // divide the flats area into N equal zones, one per flat
+  const n = flatIds.length;
+  flatIds.forEach((fid, idx) => {
+    const flatRooms = rooms.filter(r => r.flatId === fid);
+    let zone;
+    if (flatsAlongX) {
+      const zw = flatsArea.w / n;
+      zone = { x: flatsArea.x + idx * zw, y: flatsArea.y, w: zw, h: flatsArea.h };
+    } else {
+      const zh = flatsArea.h / n;
+      zone = { x: flatsArea.x, y: flatsArea.y + idx * zh, w: flatsArea.w, h: zh };
+    }
+    // slice this flat's rooms within its own zone (independent layout)
+    const items = flatRooms.map(r => {
+      const meta = ROOMS[r.typeId];
+      return { ...meta, typeId: r.typeId, sqft: Math.max(20, r.sqft), uid: r.uid, flatId: fid, label: r.customLabel || meta.label, color: meta.color, icon: meta.icon, anchor: roomAnchor(r.typeId, grid) };
+    });
+    const sliced = sliceRooms(zone, items, variant);
+    sliced.forEach(s => out.push({ ...s, px: s.rect.x, py: s.rect.y, pw: s.rect.w, ph: s.rect.h, wFt: Math.round(s.rect.w), hFt: Math.round(s.rect.h) }));
+  });
+  return out;
+}
+
 // ===== SLICING-TREE RENDERER (Stage 1: clean tiled rooms) =====
+// ===== VASTU COMPLIANCE SCORING (giant-designer honesty) =====
+// Determines which compass zone a room's CENTER falls in, given the plot facing,
+// then scores each room against its ideal Vastu zone. Practicality-aware: it scores
+// honestly and explains compromises rather than pretending every layout is perfect.
+
+// ideal zones + the zones to AVOID for each room type (from real Vastu practice)
+const VASTU_RULES = {
+  kitchen: { ideal: ["SE"], ok: ["E", "S", "NW"], avoid: ["NE", "SW"], weight: 3, label: "Kitchen" },
+  master:  { ideal: ["SW"], ok: ["S", "W"], avoid: ["NE"], weight: 3, label: "Master bedroom" },
+  pooja:   { ideal: ["NE"], ok: ["E", "N"], avoid: ["S", "SW"], weight: 2, label: "Pooja room" },
+  bath:    { ideal: ["NW", "W"], ok: ["S", "SE"], avoid: ["NE", "SW", "C"], weight: 2, label: "Bathroom" },
+  living:  { ideal: ["NE", "N", "E"], ok: ["C"], avoid: ["SW"], weight: 2, label: "Living room" },
+  bed:     { ideal: ["W", "NW", "S"], ok: ["SE", "SW"], avoid: ["NE"], weight: 1, label: "Bedroom" },
+  dining:  { ideal: ["W", "NW"], ok: ["E", "C"], avoid: [], weight: 1, label: "Dining" },
+  store:   { ideal: ["SW", "S"], ok: ["W", "NW"], avoid: ["NE"], weight: 1, label: "Store" },
+  stairs:  { ideal: ["SW", "S", "W"], ok: ["NW", "C"], avoid: ["NE"], weight: 1, label: "Staircase" },
+  park:    { ideal: ["NW", "SE"], ok: ["N", "E"], avoid: [], weight: 1, label: "Parking" },
+  garden:  { ideal: ["NE", "N", "E"], ok: [], avoid: ["SW"], weight: 1, label: "Garden" },
+};
+
+// which compass zone does a point (px,py) fall in, within the bbox, accounting for facing rotation
+function zoneOfPoint(px, py, bb, grid) {
+  const bw = bb.maxX - bb.minX || 1, bh = bb.maxY - bb.minY || 1;
+  const col = Math.min(2, Math.max(0, Math.floor(((px - bb.minX) / bw) * 3)));
+  // row: 0 = top = NORTH (high y). py is plot coord (y up). top row = high y.
+  const rowFromTop = Math.min(2, Math.max(0, Math.floor(((bb.maxY - py) / bh) * 3)));
+  return grid[rowFromTop][col];
+}
+
+function vastuScore(placedRooms, facing, points) {
+  if (!points || !placedRooms || placedRooms.length === 0) return null;
+  const grid = rotatedGrid(facing);
+  const bb = bboxOf(points);
+  let totalWeight = 0, earned = 0;
+  const aligned = [], compromised = [];
+  let waterFireConflict = false;
+  const cornerOf = {}; // track NE corner occupants for water/fire rule
+
+  placedRooms.forEach(r => {
+    const rule = VASTU_RULES[r.typeId];
+    if (!rule) return;
+    const cx = r.px + r.pw / 2, cy = r.py + r.ph / 2;
+    const zone = zoneOfPoint(cx, cy, bb, grid);
+    totalWeight += rule.weight;
+    let pts;
+    if (rule.ideal.includes(zone)) { pts = rule.weight; aligned.push({ label: rule.label, zone }); }
+    else if (rule.ok.includes(zone)) { pts = rule.weight * 0.6; }
+    else if (rule.avoid.includes(zone)) { pts = 0; compromised.push({ label: rule.label, zone, want: rule.ideal[0] }); }
+    else { pts = rule.weight * 0.3; }
+    earned += pts;
+    // water/fire corner check: kitchen (fire) and bath (water) should not share a corner zone
+    if (r.typeId === "kitchen") cornerOf.fire = zone;
+    if (r.typeId === "bath") cornerOf.water = zone;
+  });
+
+  if (cornerOf.fire && cornerOf.water && cornerOf.fire === cornerOf.water) waterFireConflict = true;
+  let score = totalWeight > 0 ? Math.round((earned / totalWeight) * 100) : 0;
+  if (waterFireConflict) score = Math.max(0, score - 8);
+  score = Math.max(35, Math.min(98, score)); // realistic band — never claim perfect or zero
+  return { score, aligned, compromised, waterFireConflict };
+}
+
+
 function SliceView({ points, rooms, facing, gates }) {
   const M = 46; // margin for dimension lines + labels
   const W = 360, H = 360;
@@ -412,14 +700,38 @@ function SliceView({ points, rooms, facing, gates }) {
       {/* room fills + interior walls */}
       {rooms.map((r, i) => {
         const x = sx(r.px), y = sy(r.py + r.ph), w = r.pw * scale, h = r.ph * scale;
+        const fillCol = r.open ? "#86B04924" : r.isHall ? "#EFEFEA" : (r.color || "#999") + "1E";
+        const strokeCol = r.open ? "#86B049" : "#3A3A3A";
+        const dash = r.open ? "4 3" : "none";
         return (
           <g key={"f" + i}>
-            <rect x={x} y={y} width={w} height={h} fill={(r.color || "#999") + "1E"} stroke="#3A3A3A" strokeWidth={INT} />
+            <rect x={x} y={y} width={w} height={h} fill={fillCol} stroke={strokeCol} strokeWidth={INT} strokeDasharray={dash} />
           </g>
         );
       })}
-      {/* thick exterior wall (drawn over the room edges) */}
-      <rect x={oL} y={oT} width={oR - oL} height={oB - oT} fill="none" stroke="#1A1A1A" strokeWidth={EXT} />
+      {/* thick exterior wall — drawn as the REAL plot polygon (handles L-shape etc.) */}
+      <polygon points={points.map(p => `${sx(p[0])},${sy(p[1])}`).join(" ")} fill="none" stroke="#1A1A1A" strokeWidth={EXT} strokeLinejoin="round" />
+
+      {/* FLAT BOUNDARIES: draw a thick wall around each flat group (apartments) */}
+      {(() => {
+        const flatIds = [...new Set(rooms.map(r => r.flatId).filter(Boolean))];
+        if (flatIds.length === 0) return null;
+        return flatIds.map(fid => {
+          const fr = rooms.filter(r => r.flatId === fid);
+          if (fr.length === 0) return null;
+          const minX = Math.min(...fr.map(r => r.px));
+          const maxX = Math.max(...fr.map(r => r.px + r.pw));
+          const minY = Math.min(...fr.map(r => r.py));
+          const maxY = Math.max(...fr.map(r => r.py + r.ph));
+          const x = sx(minX), y = sy(maxY), w = (maxX - minX) * scale, h = (maxY - minY) * scale;
+          return (
+            <g key={"flat" + fid}>
+              <rect x={x} y={y} width={w} height={h} fill="none" stroke="#1A1A1A" strokeWidth={EXT - 1} />
+              <text x={x + 4} y={y + 11} fontSize={7.5} fontWeight={800} fill={C.accent}>FLAT {fid}</text>
+            </g>
+          );
+        });
+      })()}
 
       {/* DOORS: a gap + swing arc on the wall facing the building interior */}
       {rooms.filter(r => !["park", "garden", "balcony", "court", "shaft", "terrace"].includes(r.typeId)).map((r, i) => {
@@ -895,6 +1207,9 @@ export default function App() {
   if (shapeType === "rect") points = [[0, 0], [rectW, 0], [rectW, rectD], [0, rectD]];
   else if (shapeType === "quad") points = quadPoints(qF, qR, qB, qL, qDiag);
   else points = lPoints(lW, lD, lNW, lND);
+  // v2 engine inputs: setback object + L-shape metadata
+  const v2sb = { front: sbFront, rear: sbRear, left: sbLeft, right: sbRight };
+  const v2lMeta = shapeType === "lshape" ? { W: lW, D: lD, nw: lNW, nd: lND } : null;
   const area = points ? Math.round(polyArea(points)) : 0;
 
   let footprint = 0;
@@ -914,6 +1229,35 @@ export default function App() {
     // no circulation needed if the floor has 0-1 rooms (no hallways between rooms)
     if (roomCount <= 1) return 0;
     return Math.round((footprint - coreArea) * CIRCULATION_PCT);
+  };
+  // FEASIBILITY: can the chosen flats/units fit the buildable floor? (realistic Indian minimums)
+  const BHK_MIN = { 1: 480, 2: 680, 3: 980 }; // comfortable minimum sqft per flat by BHK
+  const BHK_TIGHT = { 1: 380, 2: 540, 3: 780 }; // tight-but-buildable minimum
+  const apartmentFeasibility = () => {
+    if (projectType !== "apartment") return null;
+    const usable = footprint - coreArea; // per floor, minus staircase/lift
+    const needComfort = flatsPerFloor * BHK_MIN[flatBHK];
+    const needTight = flatsPerFloor * BHK_TIGHT[flatBHK];
+    const perFlat = Math.round(usable / flatsPerFloor);
+    if (usable >= needComfort) return { level: "good", perFlat, need: needComfort, usable };
+    if (usable >= needTight) return { level: "tight", perFlat, need: needComfort, usable };
+    // does not fit — find what would
+    let suggestion = "";
+    const maxFlats = Math.max(1, Math.floor(usable / BHK_TIGHT[flatBHK]));
+    if (maxFlats < flatsPerFloor && maxFlats >= 1) suggestion = `try ${maxFlats} flat${maxFlats > 1 ? "s" : ""} per floor`;
+    if (flatBHK > 1 && (!suggestion)) suggestion = `try ${flatBHK - 1}BHK flats`;
+    if (flatBHK > 1 && maxFlats < flatsPerFloor) suggestion = `try ${maxFlats} flat${maxFlats > 1 ? "s" : ""}, or smaller ${flatBHK - 1}BHK units`;
+    return { level: "no", perFlat, need: needTight, usable, suggestion, maxFlats };
+  };
+  const builderFeasibility = () => {
+    if (projectType !== "builder") return null;
+    const usable = footprint - coreArea;
+    const bhk = unitProgram.bedrooms;
+    const needComfort = BHK_MIN[Math.min(3, bhk)] || (bhk * 320);
+    const needTight = BHK_TIGHT[Math.min(3, bhk)] || (bhk * 250);
+    if (usable >= needComfort) return { level: "good", usable, need: needComfort };
+    if (usable >= needTight) return { level: "tight", usable, need: needComfort };
+    return { level: "no", usable, need: needTight, suggestion: bhk > 1 ? `try a ${bhk - 1}BHK unit, or a larger plot` : "try a larger plot" };
   };
   // surroundings analysis
   const openSidesCount = SIDE_KEYS.filter(k => isOpenSide(surround[k])).length;
@@ -1002,19 +1346,17 @@ export default function App() {
         if (f.kind === "basement") return { fullParking: true, rooms: [] };
         if (f.kind === "terrace") return { fullParking: false, rooms: [] };
         const rooms = [];
+        const perFlatTarget = ((footprint - coreArea) * 0.90) / flatsPerFloor;
         for (let flat = 1; flat <= flatsPerFloor; flat++) {
-          // each flat: living + kitchen + bedrooms + 1 bath
-          rooms.push({ uid: UID++, typeId: "living", sqft: ROOMS.living.min, customLabel: `Flat ${flat} · Living` });
-          rooms.push({ uid: UID++, typeId: "kitchen", sqft: ROOMS.kitchen.min, customLabel: `Flat ${flat} · Kitchen` });
-          for (let b = 0; b < flatBHK; b++) rooms.push({ uid: UID++, typeId: b === 0 ? "master" : "bed", sqft: ROOMS[b === 0 ? "master" : "bed"].min, customLabel: `Flat ${flat} · ${b === 0 ? "Master" : "Bedroom"}` });
-          rooms.push({ uid: UID++, typeId: "bath", sqft: ROOMS.bath.min, customLabel: `Flat ${flat} · Bath` });
-        }
-        // grow to fill ~90% of the floor (corridor takes the rest)
-        const target = (footprint - coreArea) * 0.90;
-        const cur = rooms.reduce((a, r) => a + r.sqft, 0);
-        if (cur > 0 && target > cur) {
-          const scale = target / cur;
-          rooms.forEach(r => { r.sqft = Math.round((r.sqft * scale) / 5) * 5; });
+          const fr = [];
+          fr.push({ uid: UID++, typeId: "living", sqft: ROOMS.living.ideal, flatId: flat, customLabel: `Flat ${flat} · Living` });
+          fr.push({ uid: UID++, typeId: "kitchen", sqft: ROOMS.kitchen.ideal, flatId: flat, customLabel: `Flat ${flat} · Kitchen` });
+          for (let b = 0; b < flatBHK; b++) fr.push({ uid: UID++, typeId: b === 0 ? "master" : "bed", sqft: ROOMS[b === 0 ? "master" : "bed"].ideal, flatId: flat, customLabel: `Flat ${flat} · ${b === 0 ? "Master" : "Bedroom"}` });
+          fr.push({ uid: UID++, typeId: "bath", sqft: ROOMS.bath.ideal, flatId: flat, customLabel: `Flat ${flat} · Bath` });
+          // scale this flat's rooms to its share of the floor
+          const cur = fr.reduce((a, r) => a + r.sqft, 0);
+          if (cur > 0 && perFlatTarget > 0) { const sc = perFlatTarget / cur; fr.forEach(r => { r.sqft = Math.round((r.sqft * sc) / 5) * 5; }); }
+          rooms.push(...fr);
         }
         return { fullParking: false, rooms };
       });
@@ -1820,6 +2162,28 @@ export default function App() {
               <button onClick={() => setShowFloorHint(false)} style={{ background: "transparent", border: "none", color: "#fff", fontSize: 18, cursor: "pointer", padding: 0, lineHeight: 1, opacity: 0.7 }}>×</button>
             </div>
           )}
+          {cur === 0 && (() => {
+            const fz = apartmentFeasibility() || builderFeasibility();
+            if (!fz) return null;
+            if (fz.level === "good") return (
+              <div style={{ background: C.green + "14", border: `1px solid ${C.green}55`, borderRadius: 12, padding: 13, marginBottom: 14 }}>
+                <div style={{ color: C.green, fontWeight: 700, fontSize: 13 }}>✓ This fits your plot comfortably</div>
+                <div style={{ color: C.muted, fontSize: 11.5, marginTop: 2, lineHeight: 1.5 }}>{projectType === "apartment" ? `Each flat gets about ${fz.perFlat.toLocaleString()} sqft on this floor — a comfortable ${flatBHK}BHK.` : `Each floor has about ${fz.usable.toLocaleString()} sqft of usable space — comfortable for this unit.`}</div>
+              </div>
+            );
+            if (fz.level === "tight") return (
+              <div style={{ background: C.amber + "16", border: `1px solid ${C.amber}66`, borderRadius: 12, padding: 13, marginBottom: 14 }}>
+                <div style={{ color: C.amber, fontWeight: 700, fontSize: 13 }}>⚠️ This fits, but it will be tight</div>
+                <div style={{ color: C.muted, fontSize: 11.5, marginTop: 2, lineHeight: 1.5 }}>{projectType === "apartment" ? `Each flat gets about ${fz.perFlat.toLocaleString()} sqft — a compact ${flatBHK}BHK. A comfortable ${flatBHK}BHK wants ~${BHK_MIN[flatBHK].toLocaleString()} sqft each. It works, but rooms will be small.` : `Each floor has ~${fz.usable.toLocaleString()} sqft — workable but compact for this unit.`} You can continue.</div>
+              </div>
+            );
+            return (
+              <div style={{ background: C.red + "12", border: `1px solid ${C.red}66`, borderRadius: 12, padding: 13, marginBottom: 14 }}>
+                <div style={{ color: C.red, fontWeight: 700, fontSize: 13 }}>⚠️ This is too small to fit well</div>
+                <div style={{ color: C.muted, fontSize: 11.5, marginTop: 2, lineHeight: 1.5 }}>{projectType === "apartment" ? `${flatsPerFloor} × ${flatBHK}BHK needs about ${fz.need.toLocaleString()} sqft per floor, but you have ~${fz.usable.toLocaleString()} sqft usable.` : `This unit needs about ${fz.need.toLocaleString()} sqft per floor, but you have ~${fz.usable.toLocaleString()} sqft.`}{fz.suggestion ? ` We suggest you ${fz.suggestion}.` : ""} You can still continue if you want.</div>
+              </div>
+            );
+          })()}
           <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, marginBottom: 14 }}>
             <div style={{ color: C.muted, fontSize: 12, fontWeight: 600, marginBottom: 8 }}>Reserved on every floor (standard minimum)</div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -1920,7 +2284,9 @@ export default function App() {
       ...(effectiveCourtyard > 0 ? [{ ...COURTYARD, sqft: effectiveCourtyard }] : []),
       ...(shaftRecommended ? [{ ...SHAFT, sqft: SHAFT.min }] : [])];
     const roomsForLayout = f.fullParking ? [{ uid: 9999, typeId: "park", sqft: Math.max(60, footprint - coreArea) }] : f.rooms;
-    const placed = activeStyle ? sliceLayout(points, facing, roomsForLayout, cores, layoutVariant) : [];
+    const v2out = (activeStyle && projectType !== "apartment") ? sliceLayoutV2(points, facing, roomsForLayout, cores, shapeType, v2sb, v2lMeta) : null;
+    const placed = activeStyle ? (projectType === "apartment" ? sliceApartmentLayout(points, facing, roomsForLayout, cores, layoutVariant) : (v2out ? v2out.rooms : [])) : [];
+    const v2decomp = v2out ? v2out.decomp : null;
     const styleObj = STYLES.find(x => x.id === activeStyle);
     const reason = {
       vastu: "Kitchen placed toward the South-East (fire), master bedroom in the stable South-West, pooja in the sacred North-East, toilets kept away from the North-East.",
@@ -1974,6 +2340,53 @@ export default function App() {
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
               {placed.map((b, k) => <span key={k} style={{ display: "flex", alignItems: "center", gap: 5, color: C.muted, fontSize: 11.5 }}><span style={{ width: 9, height: 9, borderRadius: 2, background: b.color }} />{b.label}{b.zone ? ` · ${b.zone}` : ""}</span>)}
             </div>
+            {vastuOn && (() => {
+              const vs = vastuScore(placed, facing, points);
+              if (!vs) return null;
+              const col = vs.score >= 80 ? C.green : vs.score >= 65 ? C.amber : C.red;
+              return (
+                <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, margin: "14px 0" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                    <span style={{ fontWeight: 700, fontSize: 13 }}>🧭 Vastu compliance</span>
+                    <span style={{ fontWeight: 800, fontSize: 20, color: col }}>{vs.score}%</span>
+                  </div>
+                  <div style={{ height: 7, borderRadius: 4, background: C.surface, overflow: "hidden", marginBottom: 10 }}><div style={{ width: vs.score + "%", height: "100%", background: col }} /></div>
+                  {vs.aligned.length > 0 && <div style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.6, marginBottom: vs.compromised.length ? 6 : 0 }}><b style={{ color: C.green }}>✓ Well placed:</b> {vs.aligned.slice(0, 5).map(a => `${a.label} (${a.zone})`).join(", ")}.</div>}
+                  {vs.compromised.length > 0 && <div style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.6 }}><b style={{ color: C.amber }}>△ Compromised:</b> {vs.compromised.slice(0, 4).map(c => `${c.label} is in ${c.zone}, ideally ${c.want}`).join("; ")}. Your plot shape and room sizes made the perfect spot impractical here.</div>}
+                  {vs.waterFireConflict && <div style={{ fontSize: 11.5, color: C.amber, lineHeight: 1.6, marginTop: 6 }}>⚠️ Kitchen and bathroom share a corner — Vastu prefers water and fire apart.</div>}
+                  <div style={{ fontSize: 10.5, color: C.muted, marginTop: 8, fontStyle: "italic", lineHeight: 1.5 }}>Vastu is a guide, not a rulebook — we balance it with a practical, livable layout. Even big builders rarely hit 100% on every room.</div>
+                </div>
+              );
+            })()}
+            {vastuOn && projectType === "apartment" && (() => {
+              // rank flats by how Vastu-favorable their position is (NE-most flat ranks best)
+              const flatIds = [...new Set(placed.map(r => r.flatId).filter(Boolean))];
+              if (flatIds.length < 2) return null;
+              const bb = bboxOf(points);
+              const grid = rotatedGrid(facing);
+              const ranked = flatIds.map(fid => {
+                const fr = placed.filter(r => r.flatId === fid);
+                const cx = fr.reduce((a, r) => a + (r.px + r.pw / 2), 0) / fr.length;
+                const cy = fr.reduce((a, r) => a + (r.py + r.ph / 2), 0) / fr.length;
+                const zone = zoneOfPoint(cx, cy, bb, grid);
+                // favorable zones for a flat's overall position: NE > E/N > others
+                const favScore = ["NE"].includes(zone) ? 3 : ["E", "N"].includes(zone) ? 2 : ["C", "SE", "NW"].includes(zone) ? 1 : 0;
+                return { fid, zone, favScore };
+              }).sort((a, b) => b.favScore - a.favScore);
+              const best = ranked[0];
+              return (
+                <div style={{ background: C.selBg, border: `1px solid ${C.accent}`, borderRadius: 12, padding: 14, margin: "14px 0" }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>🏬 Which flat is most Vastu-favorable?</div>
+                  <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, marginBottom: 8 }}><b style={{ color: C.text }}>Flat {best.fid}</b> sits in the {best.zone} zone — the most Vastu-favorable position on this floor. The others are optimised as far as their position allows.</div>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {ranked.map((r, i) => (
+                      <span key={r.fid} style={{ fontSize: 11, fontWeight: 600, color: i === 0 ? C.green : C.muted, background: C.card, border: `1px solid ${i === 0 ? C.green : C.border}`, borderRadius: 7, padding: "4px 9px" }}>{i === 0 ? "★ " : `#${i + 1} `}Flat {r.fid} · {r.zone}</span>
+                    ))}
+                  </div>
+                  <div style={{ fontSize: 10.5, color: C.muted, marginTop: 8, fontStyle: "italic", lineHeight: 1.5 }}>This is the honest reality of multi-flat floors — only one corner flat can hold the prime Vastu position. Big builders face the same constraint.</div>
+                </div>
+              );
+            })()}
             <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, margin: "14px 0" }}>
               <div style={{ color: C.green, fontWeight: 700, fontSize: 13, marginBottom: 4 }}>Why this arrangement</div>
               <div style={{ color: C.muted, fontSize: 12.5, lineHeight: 1.5 }}>{reason[activeStyle]}</div>
@@ -2039,7 +2452,7 @@ export default function App() {
             ...(effectiveCourtyard > 0 ? [{ ...COURTYARD, sqft: effectiveCourtyard }] : []),
             ...(shaftRecommended ? [{ ...SHAFT, sqft: SHAFT.min }] : [])];
           const froom = f.fullParking ? [{ uid: 9999, typeId: "park", sqft: Math.max(60, footprint - coreArea) }] : f.rooms;
-          const fplaced = sliceLayout(points, facing, froom, fcores, layoutVariant);
+          const fplaced = projectType === "apartment" ? sliceApartmentLayout(points, facing, froom, fcores, layoutVariant) : sliceLayoutV2(points, facing, froom, fcores, shapeType, v2sb, v2lMeta).rooms;
           const used = f.fullParking ? footprint : coreArea + f.rooms.reduce((b, r) => b + r.sqft, 0);
           return (
             <div key={i} style={{ marginBottom: 22 }}>
