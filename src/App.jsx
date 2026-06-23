@@ -400,7 +400,77 @@ function v2BuildableRect(points, sb) {
   return { x: bb.minX + sb.left, y: bb.minY + sb.front, w: (bb.maxX - bb.minX) - sb.left - sb.right, h: (bb.maxY - bb.minY) - sb.front - sb.rear };
 }
 
+// ---- point-in-polygon (ray casting) ----
+function pointInPoly(x, y, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
+    if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) inside = !inside;
+  }
+  return inside;
+}
+// is an axis-aligned rect fully inside the polygon? (check corners + edge midpoints)
+function rectInPoly(r, poly, pad = 0.4) {
+  const x0 = r.x + pad, x1 = r.x + r.w - pad, y0 = r.y + pad, y1 = r.y + r.h - pad;
+  if (x1 <= x0 || y1 <= y0) return false;
+  const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+  const pts = [[x0, y0], [x1, y0], [x0, y1], [x1, y1], [mx, y0], [mx, y1], [x0, my], [x1, my]];
+  return pts.every(p => pointInPoly(p[0], p[1], poly));
+}
+// largest axis-aligned rectangle that fits fully inside an (irregular/tilted) polygon.
+// Strategy: seed a small valid square at the centroid, grow opposite-side PAIRS so the
+// rect never collapses to a sliver, then fine-tune each side. Bounded iterations.
+function largestInnerRect(poly) {
+  const bb = bboxOf(poly);
+  const W = bb.maxX - bb.minX, H = bb.maxY - bb.minY;
+  let cx = 0, cy = 0; poly.forEach(p => { cx += p[0]; cy += p[1]; }); cx /= poly.length; cy /= poly.length;
+  if (!pointInPoly(cx, cy, poly)) { cx = (bb.minX + bb.maxX) / 2; cy = (bb.minY + bb.maxY) / 2; }
+  let l = 1, r = 1, d = 1, u = 1;
+  const mk = (l, r, d, u) => ({ x: cx - l, y: cy - d, w: l + r, h: d + u });
+  if (!rectInPoly(mk(l, r, d, u), poly, 0)) return { x: cx - 1, y: cy - 1, w: 2, h: 2 };
+  // Phase 1: grow horizontal pair and vertical pair together (keeps rect well-formed)
+  let step = Math.max(2, Math.min(W, H) / 5), guard = 0;
+  while (step > 0.4 && guard < 600) {
+    let grew = true;
+    while (grew && guard < 600) {
+      grew = false; guard++;
+      // try expand width (both l and r), then height (both d and u)
+      if (rectInPoly(mk(l + step, r + step, d, u), poly, 0.3)) { l += step; r += step; grew = true; }
+      if (rectInPoly(mk(l, r, d + step, u + step), poly, 0.3)) { d += step; u += step; grew = true; }
+    }
+    step /= 1.5;
+  }
+  // Phase 2: fine-tune each side independently to claim any remaining slack
+  step = Math.max(1, Math.min(W, H) / 8); guard = 0;
+  while (step > 0.3 && guard < 600) {
+    let grew = true;
+    while (grew && guard < 600) {
+      grew = false; guard++;
+      for (const side of ["l", "r", "d", "u"]) {
+        let nl = l, nr = r, nd = d, nu = u;
+        if (side === "l") nl += step; else if (side === "r") nr += step; else if (side === "d") nd += step; else nu += step;
+        if (rectInPoly(mk(nl, nr, nd, nu), poly, 0.3)) { l = nl; r = nr; d = nd; u = nu; grew = true; }
+      }
+    }
+    step /= 1.6;
+  }
+  return mk(l, r, d, u);
+}
+
 function v2Decompose(shapeType, points, sb, lMeta) {
+  // DIAGONAL / IRREGULAR (quad) plots: the bbox rectangle does NOT match the tilted
+  // boundary, so place the building inside the LARGEST rectangle that fits within the
+  // real polygon, then inset by setbacks. Slanted leftover = open margin (architect approach).
+  if (shapeType === "quad") {
+    const inner = largestInnerRect(points);
+    const minMargin = 1.5; // keep at least a small margin so walls sit inside the boundary
+    const fl = Math.min(sb.front, inner.h * 0.25), rr = Math.min(sb.rear, inner.h * 0.25);
+    const ll = Math.min(sb.left, inner.w * 0.25), rg = Math.min(sb.right, inner.w * 0.25);
+    const build = { x: inner.x + Math.max(minMargin, ll), y: inner.y + Math.max(minMargin, fl),
+      w: inner.w - Math.max(minMargin, ll) - Math.max(minMargin, rg), h: inner.h - Math.max(minMargin, fl) - Math.max(minMargin, rr) };
+    if (build.w < 4 || build.h < 4) return { rects: [inner], open: [], kind: "quad" };
+    return { rects: [build], open: [], kind: "quad" };
+  }
   const build = v2BuildableRect(points, sb);
   if (shapeType !== "lshape" || !lMeta) return { rects: [build], open: [], kind: shapeType };
   const { W, D, nw, nd } = lMeta;
@@ -488,9 +558,19 @@ function v2PlaceFloor(decomp, rooms) {
     }
     const bigArea = bigRect.w * bigRect.h;
     let bigSum = bigItems.reduce((a, x) => a + x.sqft, 0);
-    if (bigSum > bigArea) { const sc = bigArea / bigSum; bigItems.forEach(it => it.sqft *= sc); }
-    else if (bigArea - bigSum > bigArea * 0.08) { bigItems.push({ typeId: "hall", label: "Hall", sqft: bigArea - bigSum, isHall: true }); }
-    else { const sc = bigArea / bigSum; bigItems.forEach(it => it.sqft *= sc); }
+    if (bigSum > bigArea) {
+      const sc = bigArea / bigSum; bigItems.forEach(it => it.sqft *= sc);
+    } else {
+      // there is leftover: first GROW the habitable rooms up to ~1.6x their target
+      // (so we get generous real rooms, not one giant hall), then a modest hall for the rest.
+      const leftover = bigArea - bigSum;
+      const growCap = bigItems.reduce((a, x) => a + x.sqft * 0.6, 0); // room for 60% growth
+      const grow = Math.min(leftover, growCap);
+      if (grow > 0 && bigSum > 0) { const gf = (bigSum + grow) / bigSum; bigItems.forEach(it => it.sqft *= gf); bigSum += grow; }
+      const stillLeft = bigArea - bigSum;
+      if (stillLeft > bigArea * 0.06) bigItems.push({ typeId: "hall", label: "Hall", sqft: stillLeft, isHall: true });
+      else { const sc = bigArea / bigSum; bigItems.forEach(it => it.sqft *= sc); }
+    }
     if (bigItems.length === 0) return;
     v2Slice(bigRect, bigItems).forEach(p => {
       if (p.typeId === "master" && V2SPEC.master.ensuite) v2CarveEnsuite(p).forEach(q => out.push(q));
@@ -526,7 +606,7 @@ function sliceLayoutV2(points, facing, rooms, cores, shapeType, sb, lMeta) {
     else if (p.typeId === "kids") meta = ROOMS.bed ? { label: "Kids Room", color: ROOMS.bed.color, icon: ROOMS.bed.icon } : null;
     else if (p.typeId === "stairs" && typeof CORE !== "undefined") meta = { label: "Staircase", color: CORE.stairs.color, icon: CORE.stairs.icon };
     else if (p.typeId === "lift" && typeof CORE !== "undefined") meta = { label: "Lift", color: CORE.lift.color, icon: CORE.lift.icon };
-    if (!meta) meta = p.isHall ? { label: "Hall", color: "#C9C9C2", icon: "" } : p.open ? { label: "Open", color: "#86B049", icon: "🌳" } : { label: p.typeId, color: "#999", icon: "" };
+    if (!meta) meta = p.isHall ? { label: "Hall", color: "#C9C9C2", icon: "" } : p.open ? { label: "Open", color: "#86B049", icon: "🌳" } : { label: p.typeId, color: "#9AA0A6", icon: "" };
     return { typeId: p.typeId, label: p.label || meta.label, color: meta.color, icon: meta.icon, service: p.service, isHall: p.isHall, open: p.open, bondedTo: p.bondedTo,
       px: p.rect.x, py: p.rect.y, pw: p.rect.w, ph: p.rect.h, wFt: Math.round(p.rect.w), hFt: Math.round(p.rect.h) };
   });
@@ -700,7 +780,8 @@ function SliceView({ points, rooms, facing, gates }) {
       {/* room fills + interior walls */}
       {rooms.map((r, i) => {
         const x = sx(r.px), y = sy(r.py + r.ph), w = r.pw * scale, h = r.ph * scale;
-        const fillCol = r.open ? "#86B04924" : r.isHall ? "#EFEFEA" : (r.color || "#999") + "1E";
+        const safeCol = (r.color && /^#[0-9A-Fa-f]{6}$/.test(r.color)) ? r.color : "#9AA0A6";
+        const fillCol = r.open ? "#86B04924" : r.isHall ? "#EFEFEA" : safeCol + "1E";
         const strokeCol = r.open ? "#86B049" : "#3A3A3A";
         const dash = r.open ? "4 3" : "none";
         return (
