@@ -485,20 +485,24 @@ function v2Decompose(shapeType, points, sb, lMeta) {
   return { rects, open, kind: "lshape" };
 }
 
-function v2Slice(rect, items, depth = 0) {
+function v2Slice(rect, items, variant = 0, depth = 0) {
   if (items.length === 0) return [];
   if (items.length === 1) return [{ ...items[0], rect: { ...rect } }];
   const total = items.reduce((a, b) => a + b.sqft, 0);
-  const cutVertical = rect.w >= rect.h;
+  // variant 2 shifts the split point (denser/looser) rather than flipping the axis,
+  // which keeps every room — including the master — well-proportioned.
+  let cutVertical = rect.w >= rect.h;
   const sideLen = cutVertical ? rect.w : rect.h, otherLen = cutVertical ? rect.h : rect.w;
-  const sorted = [...items];
+  // variant 1 reverses room order so rooms land on opposite sides
+  const sorted = variant === 1 ? [...items].reverse() : [...items];
   let acc = 0, splitIdx = 1, bestErr = Infinity;
+  const splitTarget = variant === 2 ? 0.42 : 0.5; // v2 biases the cut for a different room rhythm
   for (let i = 1; i < sorted.length; i++) {
     acc += sorted[i - 1].sqft;
     const fA = acc / total, aLen = sideLen * fA, bLen = sideLen * (1 - fA);
     const arA = Math.max(aLen, otherLen) / Math.max(0.1, Math.min(aLen, otherLen));
     const arB = Math.max(bLen, otherLen) / Math.max(0.1, Math.min(bLen, otherLen));
-    const err = Math.abs(fA - 0.5) + (arA + arB) * 0.05;
+    const err = Math.abs(fA - splitTarget) + (arA + arB) * 0.05;
     if (err < bestErr) { bestErr = err; splitIdx = i; }
   }
   splitIdx = Math.max(1, Math.min(sorted.length - 1, splitIdx));
@@ -508,10 +512,10 @@ function v2Slice(rect, items, depth = 0) {
   if (minFrac < maxFrac) fracA = Math.max(minFrac, Math.min(maxFrac, fracA));
   if (cutVertical) {
     const wA = rect.w * fracA;
-    return [...v2Slice({ x: rect.x, y: rect.y, w: wA, h: rect.h }, A, depth + 1), ...v2Slice({ x: rect.x + wA, y: rect.y, w: rect.w - wA, h: rect.h }, B, depth + 1)];
+    return [...v2Slice({ x: rect.x, y: rect.y, w: wA, h: rect.h }, A, variant, depth + 1), ...v2Slice({ x: rect.x + wA, y: rect.y, w: rect.w - wA, h: rect.h }, B, variant, depth + 1)];
   } else {
     const hA = rect.h * fracA;
-    return [...v2Slice({ x: rect.x, y: rect.y, w: rect.w, h: hA }, A, depth + 1), ...v2Slice({ x: rect.x, y: rect.y + hA, w: rect.w, h: rect.h - hA }, B, depth + 1)];
+    return [...v2Slice({ x: rect.x, y: rect.y, w: rect.w, h: hA }, A, variant, depth + 1), ...v2Slice({ x: rect.x, y: rect.y + hA, w: rect.w, h: rect.h - hA }, B, variant, depth + 1)];
   }
 }
 
@@ -525,12 +529,19 @@ function v2CarveEnsuite(mp) {
   return [{ ...mp, rect: { x: r.x, y: r.y + en, w: r.w, h: r.h - en } }, { typeId: "ensuite", label: "Ensuite", rect: { x: r.x, y: r.y, w: r.w, h: en }, bondedTo: "master", service: true }];
 }
 
-function v2PlaceFloor(decomp, rooms) {
+function v2PlaceFloor(decomp, rooms, variant = 0) {
   const enriched = rooms.map(r => ({ ...r, spec: V2SPEC[r.typeId] || V2SPEC.bed, zone: (V2SPEC[r.typeId] || V2SPEC.bed).zone }));
   const zones = { public: [], private: [], service: [] };
   enriched.forEach(r => zones[r.zone].push(r));
   const rects = decomp.rects, out = [];
-  const placeZoneRooms = (rect, roomList) => {
+  // VARIANT 3 = CORRIDOR PLAN: a central walkable hallway, every room opens onto it.
+  // Used for single-rectangle buildable areas; multi-rect (L) falls through to zoned layout.
+  if (variant === 3 && rects.length === 1) {
+    const cr = v2PlaceCorridor(rects[0], rooms);
+    decomp.open.forEach(o => cr.push({ typeId: "garden", label: "Garden / Open", rect: { x: o.x, y: o.y, w: o.w, h: o.h }, open: true }));
+    return cr;
+  }
+  const placeZoneRooms = (rect, roomList, vnt) => {
     if (roomList.length === 0) return;
     const bigRooms = roomList.filter(r => !V2SMALL.has(r.typeId));
     const smallRooms = roomList.filter(r => V2SMALL.has(r.typeId));
@@ -544,16 +555,20 @@ function v2PlaceFloor(decomp, rooms) {
       let bandDepth = Math.max(5.5, smallSum / wallLen);
       bandDepth = Math.min(bandDepth, (alongX ? rect.h : rect.w) * 0.42);
       const neededLen = Math.min(wallLen, smallSum / bandDepth);
+      // variant decides which edge the service band sits on (top vs bottom / left vs right)
+      const bandAtFar = (vnt === 2);
       if (alongX) {
+        const bandY = bandAtFar ? (rect.y + rect.h - bandDepth) : rect.y;
         let cx = rect.x; const perScale = neededLen / smallItems.reduce((a, x) => a + x.sqft / bandDepth, 0);
-        smallItems.forEach(it => { const w = (it.sqft / bandDepth) * perScale; out.push({ typeId: it.typeId, label: it.label, rect: { x: cx, y: rect.y, w, h: bandDepth }, service: true }); cx += w; });
-        if (neededLen < rect.w - 2) out.push({ typeId: "hall", label: "Hall", rect: { x: rect.x + neededLen, y: rect.y, w: rect.w - neededLen, h: bandDepth }, isHall: true });
-        bigRect = { x: rect.x, y: rect.y + bandDepth, w: rect.w, h: rect.h - bandDepth };
+        smallItems.forEach(it => { const w = (it.sqft / bandDepth) * perScale; out.push({ typeId: it.typeId, label: it.label, rect: { x: cx, y: bandY, w, h: bandDepth }, service: true }); cx += w; });
+        if (neededLen < rect.w - 2) out.push({ typeId: "hall", label: "Hall", rect: { x: rect.x + neededLen, y: bandY, w: rect.w - neededLen, h: bandDepth }, isHall: true });
+        bigRect = { x: rect.x, y: bandAtFar ? rect.y : rect.y + bandDepth, w: rect.w, h: rect.h - bandDepth };
       } else {
+        const bandX = bandAtFar ? (rect.x + rect.w - bandDepth) : rect.x;
         let cy = rect.y; const perScale = neededLen / smallItems.reduce((a, x) => a + x.sqft / bandDepth, 0);
-        smallItems.forEach(it => { const h = (it.sqft / bandDepth) * perScale; out.push({ typeId: it.typeId, label: it.label, rect: { x: rect.x, y: cy, w: bandDepth, h }, service: true }); cy += h; });
-        if (neededLen < rect.h - 2) out.push({ typeId: "hall", label: "Hall", rect: { x: rect.x, y: rect.y + neededLen, w: bandDepth, h: rect.h - neededLen }, isHall: true });
-        bigRect = { x: rect.x + bandDepth, y: rect.y, w: rect.w - bandDepth, h: rect.h };
+        smallItems.forEach(it => { const h = (it.sqft / bandDepth) * perScale; out.push({ typeId: it.typeId, label: it.label, rect: { x: bandX, y: cy, w: bandDepth, h }, service: true }); cy += h; });
+        if (neededLen < rect.h - 2) out.push({ typeId: "hall", label: "Hall", rect: { x: bandX, y: rect.y + neededLen, w: bandDepth, h: rect.h - neededLen }, isHall: true });
+        bigRect = { x: bandAtFar ? rect.x : rect.x + bandDepth, y: rect.y, w: rect.w - bandDepth, h: rect.h };
       }
     }
     const bigArea = bigRect.w * bigRect.h;
@@ -561,10 +576,8 @@ function v2PlaceFloor(decomp, rooms) {
     if (bigSum > bigArea) {
       const sc = bigArea / bigSum; bigItems.forEach(it => it.sqft *= sc);
     } else {
-      // there is leftover: first GROW the habitable rooms up to ~1.6x their target
-      // (so we get generous real rooms, not one giant hall), then a modest hall for the rest.
       const leftover = bigArea - bigSum;
-      const growCap = bigItems.reduce((a, x) => a + x.sqft * 0.6, 0); // room for 60% growth
+      const growCap = bigItems.reduce((a, x) => a + x.sqft * 0.6, 0);
       const grow = Math.min(leftover, growCap);
       if (grow > 0 && bigSum > 0) { const gf = (bigSum + grow) / bigSum; bigItems.forEach(it => it.sqft *= gf); bigSum += grow; }
       const stillLeft = bigArea - bigSum;
@@ -572,33 +585,114 @@ function v2PlaceFloor(decomp, rooms) {
       else { const sc = bigArea / bigSum; bigItems.forEach(it => it.sqft *= sc); }
     }
     if (bigItems.length === 0) return;
-    v2Slice(bigRect, bigItems).forEach(p => {
+    v2Slice(bigRect, bigItems, vnt).forEach(p => {
       if (p.typeId === "master" && V2SPEC.master.ensuite) v2CarveEnsuite(p).forEach(q => out.push(q));
       else out.push(p);
     });
   };
   if (rects.length >= 2) {
-    placeZoneRooms(rects[1], zones.private);
-    placeZoneRooms(rects[0], [...zones.public, ...zones.service]);
+    placeZoneRooms(rects[1], zones.private, variant);
+    placeZoneRooms(rects[0], [...zones.public, ...zones.service], variant);
   } else {
     const r = rects[0] || { x: 0, y: 0, w: 1, h: 1 };
     const privSq = zones.private.reduce((a, x) => a + (V2SPEC[x.typeId] || V2SPEC.bed).target, 0) + V2SPEC.ensuite.target;
     const pubSq = [...zones.public, ...zones.service].reduce((a, x) => a + (V2SPEC[x.typeId] || V2SPEC.bed).target, 0);
-    const totalSq = privSq + pubSq || 1, privFrac = privSq / totalSq, privH = r.h * privFrac;
-    placeZoneRooms({ x: r.x, y: r.y + (r.h - privH), w: r.w, h: privH }, zones.private);
-    placeZoneRooms({ x: r.x, y: r.y, w: r.w, h: r.h - privH }, [...zones.public, ...zones.service]);
+    const totalSq = privSq + pubSq || 1, privFrac = Math.max(0.32, Math.min(0.6, privSq / totalSq));
+    if (variant === 1) {
+      // VARIANT B: vertical split — private zone on the LEFT, public+service on the RIGHT
+      const privW = r.w * privFrac;
+      placeZoneRooms({ x: r.x, y: r.y, w: privW, h: r.h }, zones.private, variant);
+      placeZoneRooms({ x: r.x + privW, y: r.y, w: r.w - privW, h: r.h }, [...zones.public, ...zones.service], variant);
+    } else {
+      // VARIANT A (0) & C (2): horizontal split — private at back (high y), public at front.
+      // C differs via service-band-on-far-edge + flipped slice axis inside v2Slice.
+      const privH = r.h * privFrac;
+      placeZoneRooms({ x: r.x, y: r.y + (r.h - privH), w: r.w, h: privH }, zones.private, variant);
+      placeZoneRooms({ x: r.x, y: r.y, w: r.w, h: r.h - privH }, [...zones.public, ...zones.service], variant);
+    }
   }
   decomp.open.forEach(o => out.push({ typeId: "garden", label: "Garden / Open", rect: { x: o.x, y: o.y, w: o.w, h: o.h }, open: true }));
   return out;
 }
 
+// ===== CIRCULATION SPINE: double-loaded central corridor (every room reaches a walkable hall) =====
+const V2ZONE_ORDER = { public: 0, service: 1, private: 2 };
+function v2SliceColumn(colRect, items) {
+  const totalA = items.reduce((a, b) => a + b.sqft, 0) || 1;
+  const MINH = 5;
+  let heights = items.map(it => Math.max(MINH, colRect.h * (it.sqft / totalA)));
+  let hSum = heights.reduce((a, b) => a + b, 0) || 1;
+  heights = heights.map(h => h * colRect.h / hSum);
+  let cy = colRect.y, out = [];
+  items.forEach((it, idx) => {
+    let h = (idx === items.length - 1) ? (colRect.y + colRect.h - cy) : heights[idx];
+    out.push({ typeId: it.typeId, label: it.label, rect: { x: colRect.x, y: cy, w: colRect.w, h } });
+    cy += h;
+  });
+  return out;
+}
+function v2CarveEnsuiteCol(mp, corridorOnRight) {
+  const r = mp.rect, MIN_EN_W = 4.5, MIN_BED_AFTER = 8.5;
+  const longSide = Math.max(r.w, r.h), shortSide = Math.min(r.w, r.h);
+  if (shortSide < MIN_BED_AFTER || longSide < MIN_EN_W + MIN_BED_AFTER) return [mp];
+  let en = Math.max(MIN_EN_W, Math.min(40 / shortSide, longSide * 0.32));
+  if (longSide - en < MIN_BED_AFTER) en = longSide - MIN_BED_AFTER;
+  if (r.h >= MIN_EN_W + MIN_BED_AFTER) {
+    return [{ ...mp, rect: { x: r.x, y: r.y, w: r.w, h: r.h - en } }, { typeId: "ensuite", label: "Ensuite", rect: { x: r.x, y: r.y + r.h - en, w: r.w, h: en }, service: true, bondedTo: "master" }];
+  }
+  if (corridorOnRight) return [{ ...mp, rect: { x: r.x + en, y: r.y, w: r.w - en, h: r.h } }, { typeId: "ensuite", label: "Ensuite", rect: { x: r.x, y: r.y, w: en, h: r.h }, service: true, bondedTo: "master" }];
+  return [{ ...mp, rect: { x: r.x, y: r.y, w: r.w - en, h: r.h } }, { typeId: "ensuite", label: "Ensuite", rect: { x: r.x + r.w - en, y: r.y, w: en, h: r.h }, service: true, bondedTo: "master" }];
+}
+function v2PlaceCorridor(rect, rooms) {
+  const out = [];
+  const enriched = rooms.map(r => ({ ...r, spec: V2SPEC[r.typeId] || V2SPEC.bed, zone: (V2SPEC[r.typeId] || V2SPEC.bed).zone }));
+  enriched.sort((a, b) => V2ZONE_ORDER[a.zone] - V2ZONE_ORDER[b.zone]);
+  const sizeOf = r => Math.max(r.spec.minW * r.spec.minW, r.spec.target);
+  const items = enriched.map(r => ({ typeId: r.typeId, label: r.label || r.typeId, sqft: sizeOf(r), zone: r.zone }));
+  const cw = 3.5;
+  const colW = (rect.w - cw) / 2;
+  const NICHE = new Set(["store", "pooja"]);
+  if (colW < 8) {
+    // narrow -> single-loaded corridor on the left
+    out.push({ typeId: "corridor", label: "Corridor", rect: { x: rect.x, y: rect.y, w: cw, h: rect.h }, isHall: true, isCorridor: true });
+    const colX = rect.x + cw, colWid = rect.w - cw;
+    const bigI = items.filter(it => !NICHE.has(it.typeId)), smallI = items.filter(it => NICHE.has(it.typeId));
+    let backBand = 0;
+    if (smallI.length) {
+      const ss = smallI.reduce((a, b) => a + b.sqft, 0);
+      let bandH = Math.min(Math.max(5.5, ss / colWid), rect.h * 0.34); backBand = bandH;
+      const bandY = rect.y + rect.h - bandH; let cx2 = colX;
+      const tot = smallI.reduce((a, b) => a + b.sqft / bandH, 0) || 1, sc = colWid / tot;
+      smallI.forEach(it => { const w = (it.sqft / bandH) * sc; out.push({ typeId: it.typeId, label: it.label, rect: { x: cx2, y: bandY, w, h: bandH }, service: true }); cx2 += w; });
+    }
+    v2SliceColumn({ x: colX, y: rect.y, w: colWid, h: rect.h - backBand }, bigI).forEach(p => { if (p.typeId === "master") v2CarveEnsuiteCol(p, false).forEach(q => out.push(q)); else out.push(p); });
+    return out;
+  }
+  const bigItems = items.filter(it => !NICHE.has(it.typeId)), smallItems = items.filter(it => NICHE.has(it.typeId));
+  const left = [], right = []; let la = 0, ra = 0;
+  bigItems.forEach(it => { if (la <= ra) { left.push(it); la += it.sqft; } else { right.push(it); ra += it.sqft; } });
+  const corridorX = rect.x + colW;
+  out.push({ typeId: "corridor", label: "Corridor", rect: { x: corridorX, y: rect.y, w: cw, h: rect.h }, isHall: true, isCorridor: true });
+  let leftBackBand = 0;
+  if (smallItems.length) {
+    const ss = smallItems.reduce((a, b) => a + b.sqft, 0);
+    let bandH = Math.min(Math.max(5, ss / colW), rect.h * 0.32); leftBackBand = bandH;
+    const bandY = rect.y + rect.h - bandH; let cyy = bandY;
+    const tot = smallItems.reduce((a, b) => a + b.sqft / colW, 0) || 1, sc = bandH / tot;
+    smallItems.forEach(it => { const h = (it.sqft / colW) * sc; out.push({ typeId: it.typeId, label: it.label, rect: { x: rect.x, y: cyy, w: colW, h }, service: true }); cyy += h; });
+  }
+  v2SliceColumn({ x: rect.x, y: rect.y, w: colW, h: rect.h - leftBackBand }, left).forEach(p => { if (p.typeId === "master") v2CarveEnsuiteCol(p, true).forEach(q => out.push(q)); else out.push(p); });
+  v2SliceColumn({ x: corridorX + cw, y: rect.y, w: colW, h: rect.h }, right).forEach(p => { if (p.typeId === "master") v2CarveEnsuiteCol(p, false).forEach(q => out.push(q)); else out.push(p); });
+  return out;
+}
+
 // adapter: run v2 engine and return rooms in the px/py/pw/ph format SliceView + vastuScore expect
-function sliceLayoutV2(points, facing, rooms, cores, shapeType, sb, lMeta) {
+function sliceLayoutV2(points, facing, rooms, cores, shapeType, sb, lMeta, variant = 0) {
   // fold cores (stairs/lift/etc) into the room list so they get placed too
   const coreRooms = (cores || []).map(c => ({ typeId: c.id || c.typeId || "stairs", sqft: Math.max(20, c.sqft || 60), label: c.label }));
   const allRooms = [...rooms, ...coreRooms];
   const decomp = v2Decompose(shapeType, points, sb, lMeta);
-  const placed = v2PlaceFloor(decomp, allRooms);
+  const placed = v2PlaceFloor(decomp, allRooms, variant);
   // place cores (stairs/lift) into the first buildable rect's corner as a small reserved block
   const out = placed.map(p => {
     let meta = ROOMS[p.typeId];
@@ -606,8 +700,8 @@ function sliceLayoutV2(points, facing, rooms, cores, shapeType, sb, lMeta) {
     else if (p.typeId === "kids") meta = ROOMS.bed ? { label: "Kids Room", color: ROOMS.bed.color, icon: ROOMS.bed.icon } : null;
     else if (p.typeId === "stairs" && typeof CORE !== "undefined") meta = { label: "Staircase", color: CORE.stairs.color, icon: CORE.stairs.icon };
     else if (p.typeId === "lift" && typeof CORE !== "undefined") meta = { label: "Lift", color: CORE.lift.color, icon: CORE.lift.icon };
-    if (!meta) meta = p.isHall ? { label: "Hall", color: "#C9C9C2", icon: "" } : p.open ? { label: "Open", color: "#86B049", icon: "🌳" } : { label: p.typeId, color: "#9AA0A6", icon: "" };
-    return { typeId: p.typeId, label: p.label || meta.label, color: meta.color, icon: meta.icon, service: p.service, isHall: p.isHall, open: p.open, bondedTo: p.bondedTo,
+    if (!meta) meta = p.isCorridor ? { label: "Corridor", color: "#D8D8D2", icon: "" } : p.isHall ? { label: "Hall", color: "#C9C9C2", icon: "" } : p.open ? { label: "Open", color: "#86B049", icon: "🌳" } : { label: p.typeId, color: "#9AA0A6", icon: "" };
+    return { typeId: p.typeId, label: p.label || meta.label, color: meta.color, icon: meta.icon, service: p.service, isHall: p.isHall, isCorridor: p.isCorridor, open: p.open, bondedTo: p.bondedTo,
       px: p.rect.x, py: p.rect.y, pw: p.rect.w, ph: p.rect.h, wFt: Math.round(p.rect.w), hFt: Math.round(p.rect.h) };
   });
   return { rooms: out, decomp };
@@ -850,10 +944,11 @@ function SliceView({ points, rooms, facing, gates }) {
       {rooms.map((r, i) => {
         if (r.open || r.isHall) return null;
         const rx = sx(r.px), ry = sy(r.py + r.ph), rw = r.pw * scale, rh = r.ph * scale;
-        if (rw < 22 || rh < 16) return null; // too small to furnish legibly
+        if (rw < 24 || rh < 20) return null; // too small to furnish legibly
         const t = r.typeId;
-        const FL = "#9AA0A6", FS = 0.9; // furniture line color + stroke
-        const pad = Math.min(rw, rh) * 0.12;
+        const FL = "#8A9099", FS = 0.9; // furniture line color + stroke
+        const pad = Math.min(rw, rh) * 0.1;
+        const topGap = Math.min(20, rh * 0.2); // leave space under the room label at the top
         const els = [];
         const rect = (x, y, w, h, fill = "none", extra = {}) => els.push(<rect key={els.length} x={x} y={y} width={w} height={h} fill={fill} stroke={FL} strokeWidth={FS} {...extra} />);
         const line = (x1, y1, x2, y2) => els.push(<line key={els.length} x1={x1} y1={y1} x2={x2} y2={y2} stroke={FL} strokeWidth={FS} />);
@@ -861,35 +956,34 @@ function SliceView({ points, rooms, facing, gates }) {
         const cx = rx + rw / 2, cy = ry + rh / 2;
 
         if (t === "master" || t === "bed" || t === "kids" || t === "guest") {
-          // bed: headboard against the top wall, two pillows; + wardrobe strip on a side wall
-          const bw = Math.min(rw * 0.5, rh * 0.62), bh = Math.min(rh * 0.6, bw * 1.3);
-          const bx = rx + pad, by = ry + pad;
-          rect(bx, by, bw, bh, "#9AA0A60F"); // mattress
-          rect(bx, by, bw, bh * 0.18, "#9AA0A622"); // headboard band
-          line(bx + bw * 0.12, by + bh * 0.04, bx + bw * 0.12, by + bh * 0.16); // pillow split
-          // wardrobe along right wall if room wide enough
-          if (rw > bw + pad * 3) { rect(rx + rw - pad - Math.min(10, rw * 0.12), ry + pad, Math.min(10, rw * 0.12), rh * 0.5, "#9AA0A618"); }
+          // bed sits against the LEFT wall below the label; wardrobe strip on the right wall
+          const bw = Math.min(rw * 0.46, (rh - topGap) * 0.7), bh = Math.min((rh - topGap) * 0.74, bw * 1.35);
+          const bx = rx + pad, by = ry + topGap;
+          rect(bx, by, bw, bh, "#8A909914"); // mattress
+          rect(bx, by, bw, bh * 0.16, "#8A909928"); // headboard band at top
+          line(bx + bw * 0.5, by + bh * 0.16, bx + bw * 0.5, by + bh); // split into two halves (pillows direction)
+          if (rw > bw + pad * 3.5) rect(rx + rw - pad - Math.min(11, rw * 0.13), ry + topGap, Math.min(11, rw * 0.13), (rh - topGap) * 0.55, "#8A90991F"); // wardrobe
         } else if (t === "living" || t === "reception") {
-          // sofa (L bottom-left) + coffee table + TV unit on opposite wall
-          const sofaW = rw * 0.42, sofaH = Math.max(7, rh * 0.16);
-          rect(rx + pad, ry + rh - pad - sofaH, sofaW, sofaH, "#9AA0A618"); // sofa back
-          line(rx + pad, ry + rh - pad - sofaH * 0.4, rx + pad + sofaW, ry + rh - pad - sofaH * 0.4); // seat line
-          rect(cx - rw * 0.1, cy, rw * 0.2, rh * 0.12, "none"); // coffee table
-          rect(rx + pad, ry + pad, rw * 0.5, Math.max(4, rh * 0.06), "#9AA0A622"); // TV unit on top wall
+          // sofa against bottom wall, coffee table above it, TV unit on the right wall
+          const sofaW = Math.min(rw * 0.5, 40), sofaH = Math.max(7, rh * 0.15);
+          rect(rx + pad, ry + rh - pad - sofaH, sofaW, sofaH, "#8A90991F"); // sofa
+          line(rx + pad, ry + rh - pad - sofaH * 0.55, rx + pad + sofaW, ry + rh - pad - sofaH * 0.55); // seat line
+          rect(rx + pad + sofaW * 0.18, ry + rh - pad - sofaH - rh * 0.13, sofaW * 0.5, rh * 0.08, "none"); // coffee table
+          rect(rx + rw - pad - Math.max(4, rw * 0.05), ry + rh * 0.3, Math.max(4, rw * 0.05), rh * 0.32, "#8A909928"); // TV unit on right wall
         } else if (t === "kitchen" || t === "pantry") {
-          // L-counter along top + left wall, with sink (circle) and stove (4 burners)
-          const cd = Math.max(6, Math.min(rw, rh) * 0.16); // counter depth
-          rect(rx + pad, ry + pad, rw - pad * 2, cd, "#9AA0A622"); // top counter run
-          rect(rx + pad, ry + pad, cd, rh - pad * 2, "#9AA0A622"); // left counter run
-          circ(rx + pad + (rw - pad * 2) * 0.4, ry + pad + cd / 2, cd * 0.28); // sink
-          const stoveX = rx + pad + (rw - pad * 2) * 0.72;
-          [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([ox, oy]) => circ(stoveX + ox * cd * 0.22, ry + pad + cd / 2 + oy * cd * 0.22, cd * 0.1)); // burners
+          // L-counter along top + left wall, with sink and stove burners
+          const cd = Math.max(6, Math.min(rw, rh) * 0.16);
+          rect(rx + pad, ry + topGap, rw - pad * 2, cd, "#8A909928"); // top counter run
+          rect(rx + pad, ry + topGap, cd, rh - topGap - pad, "#8A909928"); // left counter run
+          circ(rx + pad + cd / 2, ry + topGap + (rh - topGap) * 0.45, cd * 0.3); // sink on left run
+          const stoveX = rx + pad + (rw - pad * 2) * 0.6;
+          [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([ox, oy]) => circ(stoveX + ox * cd * 0.22, ry + topGap + cd / 2 + oy * cd * 0.22, cd * 0.1)); // burners
         } else if (t === "bath" || t === "ensuite") {
-          // WC (rounded) + basin (circle) + shower square (if room large enough)
-          const u = Math.max(5, Math.min(rw, rh) * 0.26);
-          els.push(<rect key={els.length} x={rx + pad} y={ry + rh - pad - u} width={u * 0.7} height={u} rx={u * 0.25} fill="#9AA0A618" stroke={FL} strokeWidth={FS} />); // WC
-          circ(rx + rw - pad - u * 0.4, ry + pad + u * 0.4, u * 0.35); // basin
-          if (rw > u * 2.4 && rh > u * 1.8) { rect(rx + rw - pad - u, ry + rh - pad - u, u, u, "#9AA0A60F"); line(rx + rw - pad - u, ry + rh - pad - u, rx + rw - pad, ry + rh - pad); } // shower
+          // WC + basin + shower square (if room large enough)
+          const u = Math.max(5, Math.min(rw, rh) * 0.28);
+          els.push(<rect key={els.length} x={rx + pad} y={ry + rh - pad - u} width={u * 0.7} height={u} rx={u * 0.25} fill="#8A909914" stroke={FL} strokeWidth={FS} />); // WC
+          circ(rx + rw - pad - u * 0.4, ry + topGap + u * 0.4, u * 0.35); // basin top-right
+          if (rw > u * 2.4 && rh > u * 2) { rect(rx + rw - pad - u, ry + rh - pad - u, u, u, "#8A909914"); line(rx + rw - pad - u, ry + rh - pad - u, rx + rw - pad, ry + rh - pad); } // shower
         } else if (t === "dining") {
           // table center + chairs
           const tw = rw * 0.4, th = rh * 0.3;
@@ -934,18 +1028,19 @@ function SliceView({ points, rooms, facing, gates }) {
         return wins.length ? <g key={"win" + i}>{wins}</g> : null;
       })}
 
-      {/* room labels: name + real dimensions */}
+      {/* room labels: name + real dimensions — placed at the TOP of the room so furniture below stays legible */}
       {rooms.map((r, i) => {
         const x = sx(r.px), y = sy(r.py + r.ph), w = r.pw * scale, h = r.ph * scale;
         const name = (r.label || "").replace(" Room", "").replace("Bedroom", "Bed");
         const showName = w > 40 && h > 28;
-        const showDim = w > 50 && h > 40;
+        const showDim = w > 50 && h > 46;
         const showIcon = w > 26 && h > 20;
+        const labelY = y + Math.min(16, h * 0.16); // near the top edge
         return (
           <g key={"l" + i}>
             {showIcon && !showName && <text x={x + w / 2} y={y + h / 2 + 4} textAnchor="middle" fontSize={Math.min(14, w / 2.5)}>{r.icon}</text>}
-            {showName && <text x={x + w / 2} y={y + h / 2 - (showDim ? 4 : -3)} textAnchor="middle" fontSize={Math.min(9.5, w / 5.5)} fontWeight={700} fill={C.text}>{name.toUpperCase()}</text>}
-            {showDim && <text x={x + w / 2} y={y + h / 2 + 9} textAnchor="middle" fontSize={8} fill={C.muted}>{ft(r.wFt)}&#39;×{ft(r.hFt)}&#39;</text>}
+            {showName && <text x={x + w / 2} y={labelY} textAnchor="middle" fontSize={Math.min(9.5, w / 5.5)} fontWeight={700} fill={C.text}>{name.toUpperCase()}</text>}
+            {showDim && <text x={x + w / 2} y={labelY + 9} textAnchor="middle" fontSize={8} fill={C.muted}>{ft(r.wFt)}&#39;×{ft(r.hFt)}&#39;</text>}
           </g>
         );
       })}
@@ -984,6 +1079,46 @@ function SliceView({ points, rooms, facing, gates }) {
 
       {/* scale note */}
       <text x={W - 8} y={H - 8} textAnchor="end" fontSize={8} fill={C.muted}>Approx · not to exact scale</text>
+
+      {/* NORTH ARROW — oriented to the plot facing (front faces `facing`, drawn at bottom) */}
+      {(() => {
+        const nx = W - 26, ny = 26, rot = (facing || 180) - 180;
+        return (
+          <g transform={`translate(${nx} ${ny}) rotate(${rot})`}>
+            <circle cx={0} cy={0} r={13} fill="#fff" stroke={C.border} strokeWidth={1} />
+            <polygon points="0,-11 4,2 0,-1 -4,2" fill={C.accent} stroke={C.accent} strokeWidth={0.5} />
+            <text x={0} y={-13.5} textAnchor="middle" fontSize={7} fontWeight={800} fill={C.accent}>N</text>
+          </g>
+        );
+      })()}
+
+      {/* SCALE BAR — a graphical 0–10–20 ft bar at the drawing scale */}
+      {(() => {
+        const barFt = 20, barPx = barFt * scale;
+        if (barPx < 24 || barPx > W - 80) {
+          const tenPx = 10 * scale;
+          if (tenPx < 18 || tenPx > W - 80) return null;
+          const bx = 12, by = H - 14;
+          return (
+            <g>
+              <rect x={bx} y={by} width={tenPx / 2} height={3.5} fill={C.text} />
+              <rect x={bx + tenPx / 2} y={by} width={tenPx / 2} height={3.5} fill="#fff" stroke={C.text} strokeWidth={0.6} />
+              <text x={bx} y={by - 3} fontSize={7} fill={C.muted}>0</text>
+              <text x={bx + tenPx} y={by - 3} textAnchor="middle" fontSize={7} fill={C.muted}>10 ft</text>
+            </g>
+          );
+        }
+        const bx = 12, by = H - 14, seg = barPx / 2;
+        return (
+          <g>
+            <rect x={bx} y={by} width={seg} height={3.5} fill={C.text} />
+            <rect x={bx + seg} y={by} width={seg} height={3.5} fill="#fff" stroke={C.text} strokeWidth={0.6} />
+            <text x={bx} y={by - 3} fontSize={7} fill={C.muted}>0</text>
+            <text x={bx + seg} y={by - 3} textAnchor="middle" fontSize={7} fill={C.muted}>10</text>
+            <text x={bx + barPx} y={by - 3} textAnchor="middle" fontSize={7} fill={C.muted}>20 ft</text>
+          </g>
+        );
+      })()}
     </svg>
   );
 }
@@ -2490,7 +2625,7 @@ export default function App() {
       ...(effectiveCourtyard > 0 ? [{ ...COURTYARD, sqft: effectiveCourtyard }] : []),
       ...(shaftRecommended ? [{ ...SHAFT, sqft: SHAFT.min }] : [])];
     const roomsForLayout = f.fullParking ? [{ uid: 9999, typeId: "park", sqft: Math.max(60, footprint - coreArea) }] : f.rooms;
-    const v2out = (activeStyle && projectType !== "apartment") ? sliceLayoutV2(points, facing, roomsForLayout, cores, shapeType, v2sb, v2lMeta) : null;
+    const v2out = (activeStyle && projectType !== "apartment") ? sliceLayoutV2(points, facing, roomsForLayout, cores, shapeType, v2sb, v2lMeta, layoutVariant) : null;
     const placed = activeStyle ? (projectType === "apartment" ? sliceApartmentLayout(points, facing, roomsForLayout, cores, layoutVariant) : (v2out ? v2out.rooms : [])) : [];
     const v2decomp = v2out ? v2out.decomp : null;
     const styleObj = STYLES.find(x => x.id === activeStyle);
@@ -2541,11 +2676,38 @@ export default function App() {
                   <div key={v} onClick={() => setLayoutVariant(v)} style={{ flex: 1, textAlign: "center", padding: "10px 0", borderRadius: 10, border: `1.5px solid ${layoutVariant === v ? C.accent : C.border}`, background: layoutVariant === v ? C.accent : C.card, color: layoutVariant === v ? "#fff" : C.text, cursor: "pointer", fontSize: 13, fontWeight: 700 }}>Option {lbl}</div>
                 ))}
               </div>
+              {shapeType !== "lshape" && (
+                <div onClick={() => setLayoutVariant(3)} style={{ marginTop: 8, textAlign: "center", padding: "10px 0", borderRadius: 10, border: `1.5px solid ${layoutVariant === 3 ? C.accent : C.border}`, background: layoutVariant === 3 ? C.accent : C.card, color: layoutVariant === 3 ? "#fff" : C.text, cursor: "pointer", fontSize: 13, fontWeight: 700 }}>
+                  🚪 Corridor plan — every room off a central hallway
+                </div>
+              )}
             </div>
             <SliceView points={points} rooms={placed} facing={facing} gates={gates} />
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
               {placed.map((b, k) => <span key={k} style={{ display: "flex", alignItems: "center", gap: 5, color: C.muted, fontSize: 11.5 }}><span style={{ width: 9, height: 9, borderRadius: 2, background: b.color }} />{b.label}{b.zone ? ` · ${b.zone}` : ""}</span>)}
             </div>
+            {(() => {
+              // ROOM AREA SCHEDULE — a real-plan style table of each room and its size
+              const sched = placed.filter(r => !r.open && !r.isHall && r.pw * r.ph >= 12).map(r => ({ name: (r.label || r.typeId).replace(" Room", ""), w: Math.round(r.pw), h: Math.round(r.ph), a: Math.round(r.pw * r.ph) }));
+              if (sched.length === 0) return null;
+              const totalA = sched.reduce((s, r) => s + r.a, 0);
+              return (
+                <div style={{ marginTop: 14, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
+                  <div style={{ background: C.surface, padding: "9px 14px", fontWeight: 800, fontSize: 12.5, letterSpacing: "-0.01em", display: "flex", justifyContent: "space-between" }}>
+                    <span>Room Schedule</span><span style={{ color: C.muted, fontWeight: 600 }}>{sched.length} rooms</span>
+                  </div>
+                  {sched.map((r, k) => (
+                    <div key={k} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 14px", borderTop: `1px solid ${C.border}`, fontSize: 12 }}>
+                      <span style={{ fontWeight: 600 }}>{r.name}</span>
+                      <span style={{ color: C.muted }}>{r.w}&#39; × {r.h}&#39; <span style={{ color: C.text, fontWeight: 600 }}>· {r.a.toLocaleString()} sqft</span></span>
+                    </div>
+                  ))}
+                  <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 14px", borderTop: `1.5px solid ${C.border}`, background: C.surface, fontSize: 12, fontWeight: 700 }}>
+                    <span>Total carpet (rooms)</span><span>{totalA.toLocaleString()} sqft</span>
+                  </div>
+                </div>
+              );
+            })()}
             {vastuOn && (() => {
               const vs = vastuScore(placed, facing, points);
               if (!vs) return null;
@@ -2658,7 +2820,7 @@ export default function App() {
             ...(effectiveCourtyard > 0 ? [{ ...COURTYARD, sqft: effectiveCourtyard }] : []),
             ...(shaftRecommended ? [{ ...SHAFT, sqft: SHAFT.min }] : [])];
           const froom = f.fullParking ? [{ uid: 9999, typeId: "park", sqft: Math.max(60, footprint - coreArea) }] : f.rooms;
-          const fplaced = projectType === "apartment" ? sliceApartmentLayout(points, facing, froom, fcores, layoutVariant) : sliceLayoutV2(points, facing, froom, fcores, shapeType, v2sb, v2lMeta).rooms;
+          const fplaced = projectType === "apartment" ? sliceApartmentLayout(points, facing, froom, fcores, layoutVariant) : sliceLayoutV2(points, facing, froom, fcores, shapeType, v2sb, v2lMeta, layoutVariant).rooms;
           const used = f.fullParking ? footprint : coreArea + f.rooms.reduce((b, r) => b + r.sqft, 0);
           return (
             <div key={i} style={{ marginBottom: 22 }}>
