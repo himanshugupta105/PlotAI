@@ -777,6 +777,13 @@ export default function App() {
     document.body.style.overflowX = "hidden";
     document.body.style.maxWidth = "100%";
     document.body.style.margin = "0";
+    // inject global keyframes for page transitions + button press feel
+    if (!document.getElementById("plotai-anim")) {
+      const st = document.createElement("style");
+      st.id = "plotai-anim";
+      st.textContent = "@keyframes plotaiPageIn{0%{opacity:0;transform:translateY(6px)}100%{opacity:1;transform:translateY(0)}}.plotai-page{animation:plotaiPageIn .22s ease both}button{transition:transform .08s ease,opacity .15s ease}button:active{transform:scale(.97)}";
+      document.head.appendChild(st);
+    }
   }, []);
   // PHASE 1 — THE BRIEF
   const [familyType, setFamilyType] = useState(null);
@@ -1087,13 +1094,13 @@ export default function App() {
   };
 
   const s = {
-    root: { fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif", background: C.bg, minHeight: "100vh", color: C.text, width: "100%", maxWidth: 600, margin: "0 auto", paddingBottom: "max(56px, env(safe-area-inset-bottom))", letterSpacing: "-0.01em", boxSizing: "border-box", overflowX: "hidden" },
-    header: { background: C.bg, padding: "20px 24px 14px", display: "flex", alignItems: "center", gap: 12 },
+    root: { fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif", background: C.bg, minHeight: "100vh", color: C.text, width: "100%", maxWidth: 600, margin: "0 auto", paddingBottom: "max(56px, env(safe-area-inset-bottom))", letterSpacing: "-0.01em", boxSizing: "border-box", overflowX: "hidden", animation: "plotaiPageIn .22s ease both" },
+    header: { background: C.bg, padding: "20px clamp(16px, 5vw, 32px) 14px", display: "flex", alignItems: "center", gap: 12 },
     logo: { width: 34, height: 34, borderRadius: 9, background: C.accent, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 },
     body: { padding: "8px clamp(16px, 5vw, 32px)" },
     label: { color: C.muted, fontSize: 11, fontWeight: 600, marginBottom: 8, display: "block", textTransform: "uppercase", letterSpacing: "0.06em" },
     input: { width: "100%", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, color: C.text, fontSize: 15, padding: "13px 16px", outline: "none", boxSizing: "border-box", fontWeight: 500 },
-    btn: (v = "primary") => ({ width: "100%", padding: "16px 0", borderRadius: 14, border: v === "primary" ? "none" : `1px solid ${C.border}`, fontWeight: 600, fontSize: 15, cursor: "pointer", background: v === "primary" ? C.accent : "transparent", color: v === "primary" ? "#fff" : C.muted, marginTop: 10, letterSpacing: "-0.01em", transition: "opacity .15s" }),
+    btn: (v = "primary") => ({ width: "100%", padding: "16px 0", borderRadius: 14, border: v === "primary" ? "none" : `1px solid ${C.border}`, fontWeight: 600, fontSize: 15, cursor: "pointer", background: v === "primary" ? C.accent : "transparent", color: v === "primary" ? "#fff" : C.muted, marginTop: 10, letterSpacing: "-0.01em", boxShadow: v === "primary" ? "0 2px 8px rgba(26,26,26,0.13)" : "none" }),
     chip: (a) => ({ flex: 1, padding: "12px 6px", borderRadius: 11, fontSize: 13.5, fontWeight: 600, cursor: "pointer", border: `1px solid ${a ? C.accent : C.border}`, background: a ? C.accent : "transparent", color: a ? "#fff" : C.text, textTransform: "capitalize", transition: "all .15s" }),
   };
   const field = (label, val, set) => (<div style={{ flex: 1 }}><span style={s.label}>{label}</span><input style={s.input} type="number" value={val} onChange={e => set(+e.target.value)} /></div>);
