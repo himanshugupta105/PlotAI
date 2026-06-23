@@ -757,6 +757,12 @@ function Splash({ fading }) {
 }
 
 export default function App() {
+  // SAFE STORAGE: try to persist to the device, but never crash if unavailable
+  const safeStore = {
+    get(key) { try { const v = window.localStorage.getItem(key); return v ? JSON.parse(v) : null; } catch (e) { return null; } },
+    set(key, val) { try { window.localStorage.setItem(key, JSON.stringify(val)); return true; } catch (e) { return false; } },
+    remove(key) { try { window.localStorage.removeItem(key); } catch (e) {} },
+  };
   const [step, setStep] = useState("project");
   const [projectType, setProjectType] = useState(null);
   // splash screen
@@ -843,6 +849,46 @@ export default function App() {
   const [activeStyle, setActiveStyle] = useState(null);
   const [layoutVariant, setLayoutVariant] = useState(0);
   const [layoutFloor, setLayoutFloor] = useState(0);
+  // DEVICE SAVE: remember the design on this device (safe — never breaks if storage is off)
+  const [hasSaved, setHasSaved] = useState(false);
+  const [showResume, setShowResume] = useState(false);
+  const [showFloorHint, setShowFloorHint] = useState(true);
+  // on first load, check if a saved design exists
+  useEffect(() => {
+    const saved = safeStore.get("plotai_design");
+    if (saved && saved.projectType) { setHasSaved(true); setShowResume(true); }
+  }, []);
+  // save a snapshot whenever the meaningful design state changes
+  useEffect(() => {
+    if (!projectType) return; // nothing to save yet
+    const snap = { step, projectType, familyType, program, unitProgram, sameOnEveryFloor, flatsPerFloor, flatBHK, priorities, connections, stairType, stairSide, carCount, projectName, purpose, shapeType, rectW, qF, lW, sbFront, floorsCount, hasBasement, topMode, liftOn, plinthFt, floorHt, basementHt, surround, gates, courtyardOn, courtyardSize, vastuOn, facing, quality, floorData, activeStyle, layoutVariant, savedAt: Date.now() };
+    safeStore.set("plotai_design", snap);
+  }, [step, projectType, program, projectName, shapeType, rectW, qF, lW, floorsCount, floorData, surround, gates, facing, vastuOn, quality, activeStyle, layoutVariant, connections, stairType, carCount]);
+  const restoreDesign = () => {
+    const d = safeStore.get("plotai_design");
+    if (!d) { setShowResume(false); return; }
+    try {
+      setProjectType(d.projectType); if (d.familyType) setFamilyType(d.familyType);
+      if (d.program) setProgram(d.program); if (d.unitProgram) setUnitProgram(d.unitProgram);
+      if (d.sameOnEveryFloor !== undefined) setSameOnEveryFloor(d.sameOnEveryFloor);
+      if (d.flatsPerFloor) setFlatsPerFloor(d.flatsPerFloor); if (d.flatBHK) setFlatBHK(d.flatBHK);
+      if (d.priorities) setPriorities(d.priorities); if (d.connections) setConnections(d.connections);
+      if (d.stairType) setStairType(d.stairType); if (d.stairSide) setStairSide(d.stairSide);
+      if (d.carCount !== undefined) setCarCount(d.carCount); if (d.projectName) setProjectName(d.projectName);
+      if (d.purpose) setPurpose(d.purpose); if (d.shapeType) setShapeType(d.shapeType);
+      if (d.rectW) setRectW(d.rectW); if (d.qF) setQF(d.qF); if (d.lW) setLW(d.lW); if (d.sbFront) setSbFront(d.sbFront);
+      if (d.floorsCount) setFloorsCount(d.floorsCount); if (d.hasBasement !== undefined) setHasBasement(d.hasBasement);
+      if (d.topMode) setTopMode(d.topMode); if (d.liftOn !== undefined) setLiftOn(d.liftOn);
+      if (d.plinthFt) setPlinthFt(d.plinthFt); if (d.floorHt) setFloorHt(d.floorHt); if (d.basementHt) setBasementHt(d.basementHt);
+      if (d.surround) setSurround(d.surround); if (d.gates) setGates(d.gates);
+      if (d.courtyardOn !== undefined) setCourtyardOn(d.courtyardOn); if (d.courtyardSize) setCourtyardSize(d.courtyardSize);
+      if (d.vastuOn !== undefined) setVastuOn(d.vastuOn); if (d.facing !== undefined) setFacing(d.facing);
+      if (d.quality) setQuality(d.quality); if (d.floorData) setFloorData(d.floorData);
+      if (d.activeStyle) setActiveStyle(d.activeStyle); if (d.layoutVariant !== undefined) setLayoutVariant(d.layoutVariant);
+      if (d.step) setStep(d.step);
+    } catch (e) { /* if anything fails, just continue fresh */ }
+    setShowResume(false);
+  };
   const [lockMsg, setLockMsg] = useState("");
 
   let points = null;
@@ -1205,6 +1251,16 @@ export default function App() {
       <div style={s.header}><div style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 34 }}><LogoMark size={30} /></div><div><div style={{ fontWeight: 700, fontSize: 19, letterSpacing: "-0.02em" }}>Plot AI</div><div style={{ color: C.muted, fontSize: 12 }}>Your AI Architect</div></div></div>
       <ProgressArc />
       <div style={s.body}>
+        {showResume && (
+          <div style={{ background: C.selBg, border: `1px solid ${C.accent}`, borderRadius: 14, padding: 16, marginBottom: 18 }}>
+            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 2 }}>👋 Welcome back</div>
+            <div style={{ color: C.muted, fontSize: 12.5, marginBottom: 12, lineHeight: 1.5 }}>We found a design you started on this device. Pick up where you left off, or start fresh.</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={restoreDesign} style={{ flex: 1, padding: "11px 0", borderRadius: 10, border: "none", background: C.accent, color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>Resume design</button>
+              <button onClick={() => { safeStore.remove("plotai_design"); setShowResume(false); setHasSaved(false); }} style={{ flex: 1, padding: "11px 0", borderRadius: 10, border: `1px solid ${C.border}`, background: "transparent", color: C.muted, fontWeight: 600, fontSize: 13, cursor: "pointer" }}>Start fresh</button>
+            </div>
+          </div>
+        )}
         <div style={{ fontWeight: 800, fontSize: 27, marginBottom: 6, letterSpacing: "-0.03em", lineHeight: 1.15 }}>What are you building?</div>
         <div style={{ color: C.muted, fontSize: 13, marginBottom: 20, lineHeight: 1.5 }}>Every architect starts here. Your answer shapes the whole design — a home for yourself works very differently from floors you plan to sell.</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -1757,6 +1813,13 @@ export default function App() {
         <div style={{ display: "flex", gap: 6, padding: "12px 16px 0" }}>{floorList.map((_, i) => <div key={i} style={{ flex: 1, height: 4, borderRadius: 2, background: i < cur ? C.green : i === cur ? C.accent : C.border }} />)}</div>
         <ProgressArc />
         <div style={s.body}>
+          {showFloorHint && cur === 0 && (
+            <div style={{ background: "#1A1A1A", color: "#fff", borderRadius: 12, padding: "13px 14px", marginBottom: 14, display: "flex", alignItems: "flex-start", gap: 10 }}>
+              <span style={{ fontSize: 16 }}>💡</span>
+              <div style={{ flex: 1, fontSize: 12.5, lineHeight: 1.5 }}>Tap a room below to place it on this floor — or hit <b>✨ Auto-place all</b> to let PlotAI arrange everything for you. You can do each floor in turn.</div>
+              <button onClick={() => setShowFloorHint(false)} style={{ background: "transparent", border: "none", color: "#fff", fontSize: 18, cursor: "pointer", padding: 0, lineHeight: 1, opacity: 0.7 }}>×</button>
+            </div>
+          )}
           <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: 12, marginBottom: 14 }}>
             <div style={{ color: C.muted, fontSize: 12, fontWeight: 600, marginBottom: 8 }}>Reserved on every floor (standard minimum)</div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -1985,7 +2048,16 @@ export default function App() {
             </div>
           );
         })}
-        <button style={s.btn("secondary")} onClick={() => setStep("input")}>← Start a New Plan</button>
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 14, padding: 16, marginBottom: 14 }}>
+          <div style={{ fontWeight: 700, fontSize: 13.5, marginBottom: 10 }}>✏️ Want to change something?</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <button onClick={() => setStep("brief2")} style={{ padding: "11px 0", borderRadius: 10, border: `1px solid ${C.border}`, background: C.card, color: C.text, fontWeight: 600, fontSize: 12.5, cursor: "pointer" }}>📝 Edit Rooms</button>
+            <button onClick={() => setStep("input")} style={{ padding: "11px 0", borderRadius: 10, border: `1px solid ${C.border}`, background: C.card, color: C.text, fontWeight: 600, fontSize: 12.5, cursor: "pointer" }}>📍 Edit Plot</button>
+            <button onClick={() => setStep("direction")} style={{ padding: "11px 0", borderRadius: 10, border: `1px solid ${C.border}`, background: C.card, color: C.text, fontWeight: 600, fontSize: 12.5, cursor: "pointer" }}>🧭 Edit Direction</button>
+            <button onClick={() => setStep("style")} style={{ padding: "11px 0", borderRadius: 10, border: `1px solid ${C.border}`, background: C.card, color: C.text, fontWeight: 600, fontSize: 12.5, cursor: "pointer" }}>🎨 Edit Layout</button>
+          </div>
+        </div>
+        <button style={s.btn("secondary")} onClick={() => { safeStore.remove("plotai_design"); setStep("project"); }}>← Start a New Plan</button>
       </div>
     </div>
   );
