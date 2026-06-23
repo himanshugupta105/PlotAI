@@ -1926,11 +1926,48 @@ export default function App() {
         <div style={{ color: C.muted, fontSize: 11.5, marginBottom: 10, lineHeight: 1.5 }}>Most local building rules require leaving open margins around the building.</div>
         <div style={{ display: "flex", gap: 12, marginBottom: 12 }}>{field("Front", sbFront, setSbFront)}{field("Rear", sbRear, setSbRear)}</div>
         <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>{field("Left", sbLeft, setSbLeft)}{field("Right", sbRight, setSbRight)}</div>
-        <div style={{ background: C.card, borderRadius: 14, padding: 14, marginBottom: 20, border: `1px solid ${C.border}`, textAlign: "center" }}>
-          <div style={{ color: C.muted, fontSize: 12 }}>Buildable area per floor (after setbacks)</div>
-          <div style={{ color: C.green, fontWeight: 800, fontSize: 30, letterSpacing: "-0.03em" }}>{footprint.toLocaleString()} sqft</div>
-          <div style={{ color: C.muted, fontSize: 11.5, marginTop: 2 }}>~{Math.round((footprint / area) * 100)}% ground coverage · {floorList.length} level(s) to design</div>
-        </div>
+        {(() => {
+          const cov = area > 0 ? Math.round((footprint / area) * 100) : 0;
+          // typical Indian residential ground-coverage ceiling (small/mid plots): ~65-75%
+          const COV_LIMIT = 75;
+          const totalBuildable = footprint * floorList.filter(f => f.kind !== "basement" && f.kind !== "terrace").length;
+          const covColor = cov === 0 ? C.red : cov <= COV_LIMIT ? C.green : C.amber;
+          const isL = shapeType === "lshape";
+          return (
+            <div style={{ background: C.card, borderRadius: 14, padding: 16, marginBottom: 20, border: `1px solid ${C.border}` }}>
+              <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 12, letterSpacing: "-0.01em" }}>🏗️ What you can build here</div>
+              <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+                <div style={{ flex: 1, background: C.surface, borderRadius: 10, padding: "10px 12px" }}>
+                  <div style={{ color: C.muted, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.04em" }}>Plot</div>
+                  <div style={{ fontWeight: 800, fontSize: 18 }}>{area.toLocaleString()}<span style={{ fontSize: 11, fontWeight: 600, color: C.muted }}> sqft</span></div>
+                </div>
+                <div style={{ flex: 1, background: C.surface, borderRadius: 10, padding: "10px 12px" }}>
+                  <div style={{ color: C.muted, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.04em" }}>Buildable / floor</div>
+                  <div style={{ fontWeight: 800, fontSize: 18, color: C.green }}>{footprint.toLocaleString()}<span style={{ fontSize: 11, fontWeight: 600, color: C.muted }}> sqft</span></div>
+                </div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                <span style={{ fontSize: 12, color: C.muted }}>Ground coverage</span>
+                <span style={{ fontSize: 13, fontWeight: 800, color: covColor }}>{cov}%</span>
+              </div>
+              <div style={{ height: 6, borderRadius: 4, background: C.surface, overflow: "hidden", marginBottom: 10 }}>
+                <div style={{ width: Math.min(100, cov) + "%", height: "100%", background: covColor }} />
+              </div>
+              {footprint > 0 ? (
+                <div style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.6 }}>
+                  After your setbacks, you can build about <b style={{ color: C.text }}>{footprint.toLocaleString()} sqft per floor</b>, and roughly <b style={{ color: C.text }}>{totalBuildable.toLocaleString()} sqft total</b> across {floorList.filter(f => f.kind !== "basement" && f.kind !== "terrace").length} living floor(s).{" "}
+                  {cov <= COV_LIMIT
+                    ? `That is within the ~${COV_LIMIT}% ground coverage most Indian residential bylaws allow.`
+                    : `That is above the ~${COV_LIMIT}% ground coverage many bylaws cap — you may need larger setbacks, or check your local rule.`}
+                  {isL ? " On your L-shaped plot, the cut-out corner is left as open space — garden, parking, or courtyard." : ""}
+                </div>
+              ) : (
+                <div style={{ fontSize: 11.5, color: C.red, lineHeight: 1.5 }}>Your setbacks are larger than the plot — nothing is buildable. Reduce them to continue.</div>
+              )}
+              <div style={{ fontSize: 10, color: C.muted, marginTop: 8, fontStyle: "italic", lineHeight: 1.5 }}>Coverage and FAR limits vary by city and plot size — this is a planning guide, not a sanctioned drawing. Confirm with your local authority or architect.</div>
+            </div>
+          );
+        })()}
         <button style={s.btn()} onClick={() => footprint > 0 ? setStep("vertical") : null}>Continue → Heights</button>
         {footprint <= 0 && <div style={{ color: C.red, fontSize: 12, marginTop: 8, textAlign: "center" }}>Setbacks are larger than the plot. Reduce them to continue.</div>}
       </div>
