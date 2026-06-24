@@ -1463,6 +1463,7 @@ export default function App() {
   const [customName, setCustomName] = useState("");
   const [customSize, setCustomSize] = useState(100);
   const [activeStyle, setActiveStyle] = useState(null);
+  const [isSample, setIsSample] = useState(false);
   const [layoutVariant, setLayoutVariant] = useState(0);
   const [layoutFloor, setLayoutFloor] = useState(0);
   // DEVICE SAVE: remember the design on this device (safe — never breaks if storage is off)
@@ -1480,6 +1481,86 @@ export default function App() {
     const snap = { step, projectType, familyType, program, unitProgram, sameOnEveryFloor, flatsPerFloor, flatBHK, priorities, connections, stairType, stairSide, carCount, projectName, purpose, shapeType, rectW, qF, lW, sbFront, floorsCount, hasBasement, topMode, liftOn, plinthFt, floorHt, basementHt, surround, gates, courtyardOn, courtyardSize, vastuOn, facing, quality, floorData, activeStyle, layoutVariant, savedAt: Date.now() };
     safeStore.set("plotai_design", snap);
   }, [step, projectType, program, projectName, shapeType, rectW, qF, lW, floorsCount, floorData, surround, gates, facing, vastuOn, quality, activeStyle, layoutVariant, connections, stairType, carCount]);
+
+  // ===== SAMPLE DESIGNS — instant finished plans for first-time visitors =====
+  const SAMPLES = [
+    { id: "s2bhk", emoji: "🏡", title: "2BHK · 30×40 plot", sub: "Compact family home, Vastu-aligned",
+      cfg: { projectType: "home", shapeType: "rect", rectW: 30, rectD: 40, facing: 90, vastuOn: true, variant: 0,
+        rooms: ["living","kitchen","dining","master","bed","bath","pooja"] } },
+    { id: "s3bhk", emoji: "🏛️", title: "3BHK · 40×60 plot", sub: "Spacious home with corridor plan",
+      cfg: { projectType: "home", shapeType: "rect", rectW: 40, rectD: 60, facing: 0, vastuOn: true, variant: 3,
+        rooms: ["living","kitchen","dining","master","bed","kids","bath","store","pooja"] } },
+    { id: "sdiag", emoji: "📐", title: "Corner plot · diagonal", sub: "Irregular plot, fitted footprint",
+      cfg: { projectType: "home", shapeType: "quad", qF: 42, qR: 60, qB: 40, qL: 55, qDiag: 72, facing: 180, vastuOn: true, variant: 0,
+        rooms: ["living","kitchen","dining","master","bed","bath"] } },
+  ];
+  const loadSample = (sample) => {
+    const c = sample.cfg;
+    setProjectType(c.projectType);
+    setShapeType(c.shapeType);
+    if (c.rectW) setRectW(c.rectW); if (c.rectD) setRectD(c.rectD);
+    if (c.qF) { setQF(c.qF); setQR(c.qR); setQB(c.qB); setQL(c.qL); setQDiag(c.qDiag); }
+    setFacing(c.facing); setVastuOn(c.vastuOn); setLayoutVariant(c.variant);
+    setProjectName(sample.title);
+    // build a single-floor design with the sample's rooms
+    const rooms = c.rooms.map(typeId => ({ uid: UID++, typeId, sqft: (ROOMS[typeId] && ROOMS[typeId].min) || 120 }));
+    setFloorsCount(1); setHasBasement(false); setTopMode("normal");
+    setFloorData([{ fullParking: false, rooms }]);
+    setCur(0); setLayoutFloor(0);
+    setActiveStyle(c.vastuOn ? "vastu" : "social");
+    setIsSample(true);
+    // jump straight to the finished plan
+    setTimeout(() => { setStep("style"); window.scrollTo(0, 0); }, 0);
+  };
+
+  const [shareMsg, setShareMsg] = useState("");
+  const sharePlan = (mode) => {
+    try {
+      const area = document.getElementById("plotai-export-area");
+      const svg = area && area.querySelector("svg");
+      if (!svg) { setShareMsg("Could not find the plan to export."); return; }
+      const clone = svg.cloneNode(true);
+      clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+      const vb = svg.viewBox && svg.viewBox.baseVal;
+      const w = (vb && vb.width) || svg.clientWidth || 600;
+      const h = (vb && vb.height) || svg.clientHeight || 800;
+      clone.setAttribute("width", w); clone.setAttribute("height", h);
+      const svgStr = new XMLSerializer().serializeToString(clone);
+      const url = URL.createObjectURL(new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" }));
+      const img = new Image();
+      img.onload = () => {
+        const sc = 2, padBottom = 46;
+        const canvas = document.createElement("canvas");
+        canvas.width = w * sc; canvas.height = h * sc + padBottom * sc;
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, w * sc, h * sc);
+        // watermark — every shared plan markets the app
+        ctx.fillStyle = "#1A1A1A"; ctx.font = `700 ${13 * sc}px sans-serif`; ctx.textAlign = "center";
+        ctx.fillText("Made with PlotAI", canvas.width / 2, h * sc + 20 * sc);
+        ctx.fillStyle = "#9AA0A6"; ctx.font = `${10 * sc}px sans-serif`;
+        ctx.fillText("plot-ai-nu.vercel.app · design your home like an architect", canvas.width / 2, h * sc + 34 * sc);
+        URL.revokeObjectURL(url);
+        canvas.toBlob(async (blob) => {
+          if (!blob) { setShareMsg("Export failed — try a screenshot for now."); return; }
+          const fname = `PlotAI-${(projectName || "design").replace(/[^a-zA-Z0-9]/g, "-").slice(0, 24)}.png`;
+          const file = new File([blob], fname, { type: "image/png" });
+          if (mode === "share" && navigator.canShare && navigator.canShare({ files: [file] })) {
+            try { await navigator.share({ files: [file], title: "My PlotAI home design", text: "Here is my home plan, designed on PlotAI." }); setShareMsg(""); }
+            catch (e) { /* user cancelled */ }
+          } else {
+            const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = fname;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            setShareMsg(mode === "share" ? "Sharing is not supported here — downloaded the image instead." : "Plan downloaded.");
+            setTimeout(() => setShareMsg(""), 4000);
+          }
+        }, "image/png");
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); setShareMsg("Could not export the image. A screenshot works too."); };
+      img.src = url;
+    } catch (e) { setShareMsg("Could not export. Try a screenshot for now."); }
+  };
+
   const restoreDesign = () => {
     const d = safeStore.get("plotai_design");
     if (!d) { setShowResume(false); return; }
@@ -1919,6 +2000,26 @@ export default function App() {
           ))}
         </div>
         <div style={{ color: C.muted, fontSize: 11.5, marginTop: 18, textAlign: "center", lineHeight: 1.5 }}>Tap one to begin designing.</div>
+
+        {/* SAMPLE GALLERY — instant finished plans, the first-impression hook */}
+        <div style={{ marginTop: 26, paddingTop: 22, borderTop: `1px solid ${C.border}` }}>
+          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", marginBottom: 4 }}>
+            <div style={{ fontWeight: 800, fontSize: 16, letterSpacing: "-0.02em" }}>✨ Or see it in action</div>
+          </div>
+          <div style={{ color: C.muted, fontSize: 12.5, marginBottom: 14, lineHeight: 1.5 }}>Tap a ready-made design to see a finished plan instantly — furniture, Vastu score and all. No setup needed.</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {SAMPLES.map(sm => (
+              <div key={sm.id} onClick={() => loadSample(sm)} style={{ display: "flex", alignItems: "center", gap: 14, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 14, padding: "14px 16px", cursor: "pointer" }}>
+                <div style={{ fontSize: 30, lineHeight: 1 }}>{sm.emoji}</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: 700, fontSize: 14 }}>{sm.title}</div>
+                  <div style={{ color: C.muted, fontSize: 11.5, marginTop: 2 }}>{sm.sub}</div>
+                </div>
+                <div style={{ color: C.accent, fontWeight: 700, fontSize: 13 }}>View →</div>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -2668,6 +2769,12 @@ export default function App() {
                 ))}
               </div>
             )}
+            {isSample && (
+              <div style={{ background: C.selBg, border: `1px solid ${C.accent}`, borderRadius: 12, padding: "12px 14px", marginBottom: 14, display: "flex", alignItems: "center", gap: 12 }}>
+                <div style={{ flex: 1, fontSize: 12.5, lineHeight: 1.5, color: C.text }}><b>✨ This is an example design.</b> Like what you see? Build your own in a few taps.</div>
+                <button onClick={() => { setIsSample(false); setActiveStyle(null); setFloorData([]); setStep("project"); window.scrollTo(0, 0); }} style={{ flexShrink: 0, padding: "9px 14px", borderRadius: 9, border: "none", background: C.accent, color: "#fff", fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>Design mine</button>
+              </div>
+            )}
             <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 8 }}>{styleObj.icon} {styleObj.label} — {floorList[layoutFloor]?.label}</div>
             <div style={{ marginBottom: 10 }}>
               <div style={{ color: C.muted, fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Layout options — tap to compare</div>
@@ -2682,7 +2789,7 @@ export default function App() {
                 </div>
               )}
             </div>
-            <SliceView points={points} rooms={placed} facing={facing} gates={gates} />
+            <div id="plotai-export-area"><SliceView points={points} rooms={placed} facing={facing} gates={gates} /></div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
               {placed.map((b, k) => <span key={k} style={{ display: "flex", alignItems: "center", gap: 5, color: C.muted, fontSize: 11.5 }}><span style={{ width: 9, height: 9, borderRadius: 2, background: b.color }} />{b.label}{b.zone ? ` · ${b.zone}` : ""}</span>)}
             </div>
@@ -2759,6 +2866,11 @@ export default function App() {
               <div style={{ color: C.green, fontWeight: 700, fontSize: 13, marginBottom: 4 }}>Why this arrangement</div>
               <div style={{ color: C.muted, fontSize: 12.5, lineHeight: 1.5 }}>{reason[activeStyle]}</div>
             </div>
+            <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+              <button onClick={() => sharePlan("share")} style={{ flex: 2, padding: "13px 0", borderRadius: 12, border: "none", background: C.accent, color: "#fff", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>📤 Share my plan</button>
+              <button onClick={() => sharePlan("download")} style={{ flex: 1, padding: "13px 0", borderRadius: 12, border: `1.5px solid ${C.border}`, background: C.card, color: C.text, fontWeight: 700, fontSize: 14, cursor: "pointer" }}>⬇ Save</button>
+            </div>
+            {shareMsg && <div style={{ color: C.muted, fontSize: 11.5, marginTop: 8, textAlign: "center" }}>{shareMsg}</div>}
             <button style={s.btn()} onClick={() => setStep("summary")}>Continue → Your Design Summary</button>
           </>}
 
