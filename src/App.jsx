@@ -529,7 +529,7 @@ function v2CarveEnsuite(mp) {
   return [{ ...mp, rect: { x: r.x, y: r.y + en, w: r.w, h: r.h - en } }, { typeId: "ensuite", label: "Ensuite", rect: { x: r.x, y: r.y, w: r.w, h: en }, bondedTo: "master", service: true }];
 }
 
-function v2PlaceFloor(decomp, rooms, variant = 0) {
+function v2PlaceFloor(decomp, rooms, variant = 0, corridorW = 3.5) {
   const enriched = rooms.map(r => ({ ...r, spec: V2SPEC[r.typeId] || V2SPEC.bed, zone: (V2SPEC[r.typeId] || V2SPEC.bed).zone }));
   const zones = { public: [], private: [], service: [] };
   enriched.forEach(r => zones[r.zone].push(r));
@@ -537,7 +537,7 @@ function v2PlaceFloor(decomp, rooms, variant = 0) {
   // VARIANT 3 = CORRIDOR PLAN: a central walkable hallway, every room opens onto it.
   // Used for single-rectangle buildable areas; multi-rect (L) falls through to zoned layout.
   if (variant === 3 && rects.length === 1) {
-    const cr = v2PlaceCorridor(rects[0], rooms);
+    const cr = v2PlaceCorridor(rects[0], rooms, corridorW);
     decomp.open.forEach(o => cr.push({ typeId: "garden", label: "Garden / Open", rect: { x: o.x, y: o.y, w: o.w, h: o.h }, open: true }));
     return cr;
   }
@@ -643,13 +643,13 @@ function v2CarveEnsuiteCol(mp, corridorOnRight) {
   if (corridorOnRight) return [{ ...mp, rect: { x: r.x + en, y: r.y, w: r.w - en, h: r.h } }, { typeId: "ensuite", label: "Ensuite", rect: { x: r.x, y: r.y, w: en, h: r.h }, service: true, bondedTo: "master" }];
   return [{ ...mp, rect: { x: r.x, y: r.y, w: r.w - en, h: r.h } }, { typeId: "ensuite", label: "Ensuite", rect: { x: r.x + r.w - en, y: r.y, w: en, h: r.h }, service: true, bondedTo: "master" }];
 }
-function v2PlaceCorridor(rect, rooms) {
+function v2PlaceCorridor(rect, rooms, cw = 3.5) {
   const out = [];
   const enriched = rooms.map(r => ({ ...r, spec: V2SPEC[r.typeId] || V2SPEC.bed, zone: (V2SPEC[r.typeId] || V2SPEC.bed).zone }));
   enriched.sort((a, b) => V2ZONE_ORDER[a.zone] - V2ZONE_ORDER[b.zone]);
   const sizeOf = r => Math.max(r.spec.minW * r.spec.minW, r.spec.target);
   const items = enriched.map(r => ({ typeId: r.typeId, label: r.label || r.typeId, sqft: sizeOf(r), zone: r.zone }));
-  const cw = 3.5;
+
   const colW = (rect.w - cw) / 2;
   const NICHE = new Set(["store", "pooja"]);
   if (colW < 8) {
@@ -687,12 +687,12 @@ function v2PlaceCorridor(rect, rooms) {
 }
 
 // adapter: run v2 engine and return rooms in the px/py/pw/ph format SliceView + vastuScore expect
-function sliceLayoutV2(points, facing, rooms, cores, shapeType, sb, lMeta, variant = 0) {
+function sliceLayoutV2(points, facing, rooms, cores, shapeType, sb, lMeta, variant = 0, corridorW = 3.5) {
   // fold cores (stairs/lift/etc) into the room list so they get placed too
   const coreRooms = (cores || []).map(c => ({ typeId: c.id || c.typeId || "stairs", sqft: Math.max(20, c.sqft || 60), label: c.label }));
   const allRooms = [...rooms, ...coreRooms];
   const decomp = v2Decompose(shapeType, points, sb, lMeta);
-  const placed = v2PlaceFloor(decomp, allRooms, variant);
+  const placed = v2PlaceFloor(decomp, allRooms, variant, corridorW);
   // place cores (stairs/lift) into the first buildable rect's corner as a small reserved block
   const out = placed.map(p => {
     let meta = ROOMS[p.typeId];
@@ -1434,6 +1434,10 @@ export default function App() {
   const [hasBasement, setHasBasement] = useState(false);
   const [topMode, setTopMode] = useState("normal");
   const [liftOn, setLiftOn] = useState(false);
+  // user-customisable core reserves — the constants in CORE are the MINIMUMS; user can increase
+  const [stairArea, setStairArea] = useState(CORE.stairs.min);   // sqft, min 90
+  const [liftArea, setLiftArea] = useState(CORE.lift.min);       // sqft, min 30
+  const [corridorWidth, setCorridorWidth] = useState(3.5);       // ft, min 3.5 (corridor plan hallway)
   // VERTICAL layer (NBC-sourced defaults, in feet)
   const [plinthFt, setPlinthFt] = useState(2);
   const [floorHt, setFloorHt] = useState(10);
@@ -1478,7 +1482,7 @@ export default function App() {
   // save a snapshot whenever the meaningful design state changes
   useEffect(() => {
     if (!projectType) return; // nothing to save yet
-    const snap = { step, projectType, familyType, program, unitProgram, sameOnEveryFloor, flatsPerFloor, flatBHK, priorities, connections, stairType, stairSide, carCount, projectName, purpose, shapeType, rectW, qF, lW, sbFront, floorsCount, hasBasement, topMode, liftOn, plinthFt, floorHt, basementHt, surround, gates, courtyardOn, courtyardSize, vastuOn, facing, quality, floorData, activeStyle, layoutVariant, savedAt: Date.now() };
+    const snap = { step, projectType, familyType, program, unitProgram, sameOnEveryFloor, flatsPerFloor, flatBHK, priorities, connections, stairType, stairSide, carCount, projectName, purpose, shapeType, rectW, qF, lW, sbFront, floorsCount, hasBasement, topMode, liftOn, stairArea, liftArea, corridorWidth, plinthFt, floorHt, basementHt, surround, gates, courtyardOn, courtyardSize, vastuOn, facing, quality, floorData, activeStyle, layoutVariant, savedAt: Date.now() };
     safeStore.set("plotai_design", snap);
   }, [step, projectType, program, projectName, shapeType, rectW, qF, lW, floorsCount, floorData, surround, gates, facing, vastuOn, quality, activeStyle, layoutVariant, connections, stairType, carCount]);
 
@@ -1575,7 +1579,7 @@ export default function App() {
       if (d.purpose) setPurpose(d.purpose); if (d.shapeType) setShapeType(d.shapeType);
       if (d.rectW) setRectW(d.rectW); if (d.qF) setQF(d.qF); if (d.lW) setLW(d.lW); if (d.sbFront) setSbFront(d.sbFront);
       if (d.floorsCount) setFloorsCount(d.floorsCount); if (d.hasBasement !== undefined) setHasBasement(d.hasBasement);
-      if (d.topMode) setTopMode(d.topMode); if (d.liftOn !== undefined) setLiftOn(d.liftOn);
+      if (d.topMode) setTopMode(d.topMode); if (d.liftOn !== undefined) setLiftOn(d.liftOn); if (d.stairArea) setStairArea(d.stairArea); if (d.liftArea) setLiftArea(d.liftArea); if (d.corridorWidth) setCorridorWidth(d.corridorWidth);
       if (d.plinthFt) setPlinthFt(d.plinthFt); if (d.floorHt) setFloorHt(d.floorHt); if (d.basementHt) setBasementHt(d.basementHt);
       if (d.surround) setSurround(d.surround); if (d.gates) setGates(d.gates);
       if (d.courtyardOn !== undefined) setCourtyardOn(d.courtyardOn); if (d.courtyardSize) setCourtyardSize(d.courtyardSize);
@@ -1607,7 +1611,7 @@ export default function App() {
     ratio = Math.min(0.95, ratio);
     footprint = Math.round(area * ratio);
   }
-  const coreArea = CORE.stairs.min + (liftOn ? CORE.lift.min : 0);
+  const coreArea = Math.max(CORE.stairs.min, stairArea) + (liftOn ? Math.max(CORE.lift.min, liftArea) : 0);
   // CIRCULATION layer: reserve hallway/movement space (architect's ~10% rule)
   const CIRCULATION_PCT = 0.10; // ~10% of buildable area for hallways & movement
   const circulationFor = (roomCount) => {
@@ -1875,6 +1879,7 @@ export default function App() {
     input: { width: "100%", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, color: C.text, fontSize: 15, padding: "13px 16px", outline: "none", boxSizing: "border-box", fontWeight: 500 },
     btn: (v = "primary") => ({ width: "100%", padding: "16px 0", borderRadius: 14, border: v === "primary" ? "none" : `1px solid ${C.border}`, fontWeight: 600, fontSize: 15, cursor: "pointer", background: v === "primary" ? C.accent : "transparent", color: v === "primary" ? "#fff" : C.muted, marginTop: 10, letterSpacing: "-0.01em", boxShadow: v === "primary" ? "0 2px 8px rgba(26,26,26,0.13)" : "none" }),
     chip: (a) => ({ flex: 1, padding: "12px 6px", borderRadius: 11, fontSize: 13.5, fontWeight: 600, cursor: "pointer", border: `1px solid ${a ? C.accent : C.border}`, background: a ? C.accent : "transparent", color: a ? "#fff" : C.text, textTransform: "capitalize", transition: "all .15s" }),
+    step: { width: 30, height: 30, borderRadius: 8, border: `1px solid ${C.border}`, background: C.card, color: C.text, fontWeight: 800, fontSize: 16, cursor: "pointer", lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center" },
   };
   const field = (label, val, set) => (<div style={{ flex: 1 }}><span style={s.label}>{label}</span><input style={s.input} type="number" value={val} onChange={e => set(+e.target.value)} /></div>);
   const back = (fn) => <button onClick={fn} style={{ background: "none", border: "none", color: C.text, cursor: "pointer", fontSize: 22, padding: 0, lineHeight: 1, fontWeight: 300 }}>←</button>;
@@ -2314,18 +2319,51 @@ export default function App() {
         <span style={s.label}>Floors above ground (including ground floor)</span>
         <div style={{ display: "flex", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>{[1, 2, 3, 4, 5].map(f => <button key={f} style={s.chip(floorsCount === f)} onClick={() => setFloorsCount(f)}>{f}</button>)}</div>
         <div style={{ color: C.muted, fontSize: 12, marginBottom: 18 }}>{hasBasement ? "Basement · " : ""}{Array.from({ length: floorsCount }, (_, i) => i === 0 ? "Ground" : i === 1 ? "1st" : i === 2 ? "2nd" : i === 3 ? "3rd" : `${i}th`).join(" · ")}</div>
-        <span style={s.label}>Top floor style</span>
-        <div style={{ color: C.muted, fontSize: 11.5, marginBottom: 10 }}>What should your topmost floor be?</div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 }}>
-          {[["normal", "🏠 Normal living floor", "Same as any other floor"], ["terrace", "🏞️ Open Terrace", "Rest of top floor left open — no rooms"], ["penthouse", "🏙️ Penthouse", "A premium smaller living space at the top"], ["both", "🏙️ Penthouse + Terrace", "Penthouse rooms with surrounding open terrace"]].map(([id, lbl, desc]) => (
-            <div key={id} onClick={() => setTopMode(id)} style={{ display: "flex", alignItems: "center", gap: 10, background: topMode === id ? C.selBg : C.card, border: `1.5px solid ${topMode === id ? C.accent : C.border}`, borderRadius: 10, padding: "10px 12px", cursor: "pointer" }}>
-              <div style={{ width: 18, height: 18, borderRadius: "50%", border: `2px solid ${topMode === id ? C.accent : C.border}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{topMode === id && <div style={{ width: 9, height: 9, borderRadius: "50%", background: C.accent }} />}</div>
-              <div><div style={{ fontWeight: 700, fontSize: 13 }}>{lbl}</div><div style={{ color: C.muted, fontSize: 11.5 }}>{desc}</div></div>
+        <span style={s.label}>Your topmost floor</span>
+        <div style={{ color: C.muted, fontSize: 11.5, marginBottom: 10 }}>Pick what sits on top of your building.</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 20 }}>
+          {[["normal", "🏠", "Full floor", "Rooms, like every other floor"], ["terrace", "🏞️", "Open terrace", "Left open — no rooms on top"], ["penthouse", "🏙️", "Penthouse", "A smaller living space up top"], ["both", "🌇", "Penthouse + terrace", "Some rooms, rest open terrace"]].map(([id, ic, lbl, desc]) => (
+            <div key={id} onClick={() => setTopMode(id)} style={{ background: topMode === id ? C.selBg : C.card, border: `1.5px solid ${topMode === id ? C.accent : C.border}`, borderRadius: 12, padding: "14px 12px", cursor: "pointer", textAlign: "center" }}>
+              <div style={{ fontSize: 26 }}>{ic}</div>
+              <div style={{ fontWeight: 700, fontSize: 13, marginTop: 6 }}>{lbl}</div>
+              <div style={{ color: C.muted, fontSize: 10.5, marginTop: 3, lineHeight: 1.35 }}>{desc}</div>
             </div>
           ))}
         </div>
-        <div onClick={() => setLiftOn(v => !v)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: C.card, borderRadius: 12, padding: "12px 16px", marginBottom: 18, border: `1.5px solid ${liftOn ? C.purple : C.border}`, cursor: "pointer" }}>
-          <div><div style={{ fontWeight: 700, fontSize: 14 }}>🛗 Include a Lift</div><div style={{ color: C.muted, fontSize: 12 }}>Reserves {CORE.lift.min} sqft on every floor</div></div>{toggle(liftOn)}
+        <div onClick={() => setLiftOn(v => !v)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: C.card, borderRadius: 12, padding: "12px 16px", marginBottom: liftOn ? 8 : 18, border: `1.5px solid ${liftOn ? C.purple : C.border}`, cursor: "pointer" }}>
+          <div><div style={{ fontWeight: 700, fontSize: 14 }}>🛗 Include a Lift</div><div style={{ color: C.muted, fontSize: 12 }}>Reserves space on every floor for the lift shaft</div></div>{toggle(liftOn)}
+        </div>
+        {liftOn && (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: C.surface, borderRadius: 12, padding: "10px 14px", marginBottom: 18 }}>
+            <div style={{ fontSize: 12.5, color: C.text }}>Lift area <span style={{ color: C.muted }}>(min {CORE.lift.min} sqft)</span></div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <button onClick={() => setLiftArea(a => Math.max(CORE.lift.min, a - 5))} style={s.step}>−</button>
+              <span style={{ fontWeight: 800, fontSize: 14, minWidth: 54, textAlign: "center" }}>{Math.max(CORE.lift.min, liftArea)} sqft</span>
+              <button onClick={() => setLiftArea(a => Math.min(120, a + 5))} style={s.step}>+</button>
+            </div>
+          </div>
+        )}
+
+        <span style={s.label}>Staircase area</span>
+        <div style={{ color: C.muted, fontSize: 11.5, marginBottom: 10, lineHeight: 1.5 }}>Every floor reserves space for the staircase. {CORE.stairs.min} sqft is the practical minimum — increase it for a wider, more comfortable stair.</div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: C.surface, borderRadius: 12, padding: "10px 14px", marginBottom: 18 }}>
+          <div style={{ fontSize: 12.5, color: C.text }}>🪜 Staircase <span style={{ color: C.muted }}>(min {CORE.stairs.min} sqft)</span></div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <button onClick={() => setStairArea(a => Math.max(CORE.stairs.min, a - 10))} style={s.step}>−</button>
+            <span style={{ fontWeight: 800, fontSize: 14, minWidth: 54, textAlign: "center" }}>{Math.max(CORE.stairs.min, stairArea)} sqft</span>
+            <button onClick={() => setStairArea(a => Math.min(220, a + 10))} style={s.step}>+</button>
+          </div>
+        </div>
+
+        <span style={s.label}>Hallway / corridor width</span>
+        <div style={{ color: C.muted, fontSize: 11.5, marginBottom: 10, lineHeight: 1.5 }}>Used in the Corridor plan layout. 3.5 ft is the comfortable minimum — widen it for a more open passage.</div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: C.surface, borderRadius: 12, padding: "10px 14px", marginBottom: 18 }}>
+          <div style={{ fontSize: 12.5, color: C.text }}>↔ Corridor <span style={{ color: C.muted }}>(min 3.5 ft)</span></div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <button onClick={() => setCorridorWidth(w => Math.max(3.5, +(w - 0.5).toFixed(1)))} style={s.step}>−</button>
+            <span style={{ fontWeight: 800, fontSize: 14, minWidth: 54, textAlign: "center" }}>{Math.max(3.5, corridorWidth)} ft</span>
+            <button onClick={() => setCorridorWidth(w => Math.min(6, +(w + 0.5).toFixed(1)))} style={s.step}>+</button>
+          </div>
         </div>
         <span style={s.label}>Setbacks — open space left on each side (ft)</span>
         <div style={{ color: C.muted, fontSize: 11.5, marginBottom: 10, lineHeight: 1.5 }}>Most local building rules require leaving open margins around the building.</div>
@@ -2726,7 +2764,7 @@ export default function App() {
       ...(effectiveCourtyard > 0 ? [{ ...COURTYARD, sqft: effectiveCourtyard }] : []),
       ...(shaftRecommended ? [{ ...SHAFT, sqft: SHAFT.min }] : [])];
     const roomsForLayout = f.fullParking ? [{ uid: 9999, typeId: "park", sqft: Math.max(60, footprint - coreArea) }] : f.rooms;
-    const v2out = (activeStyle && projectType !== "apartment") ? sliceLayoutV2(points, facing, roomsForLayout, cores, shapeType, v2sb, v2lMeta, layoutVariant) : null;
+    const v2out = (activeStyle && projectType !== "apartment") ? sliceLayoutV2(points, facing, roomsForLayout, cores, shapeType, v2sb, v2lMeta, layoutVariant, Math.max(3.5, corridorWidth)) : null;
     const placed = activeStyle ? (projectType === "apartment" ? sliceApartmentLayout(points, facing, roomsForLayout, cores, layoutVariant) : (v2out ? v2out.rooms : [])) : [];
     const v2decomp = v2out ? v2out.decomp : null;
     const styleObj = STYLES.find(x => x.id === activeStyle);
@@ -2871,6 +2909,7 @@ export default function App() {
               <button onClick={() => sharePlan("download")} style={{ flex: 1, padding: "13px 0", borderRadius: 12, border: `1.5px solid ${C.border}`, background: C.card, color: C.text, fontWeight: 700, fontSize: 14, cursor: "pointer" }}>⬇ Save</button>
             </div>
             {shareMsg && <div style={{ color: C.muted, fontSize: 11.5, marginTop: 8, textAlign: "center" }}>{shareMsg}</div>}
+
             <button style={s.btn()} onClick={() => setStep("summary")}>Continue → Your Design Summary</button>
           </>}
 
@@ -2932,7 +2971,7 @@ export default function App() {
             ...(effectiveCourtyard > 0 ? [{ ...COURTYARD, sqft: effectiveCourtyard }] : []),
             ...(shaftRecommended ? [{ ...SHAFT, sqft: SHAFT.min }] : [])];
           const froom = f.fullParking ? [{ uid: 9999, typeId: "park", sqft: Math.max(60, footprint - coreArea) }] : f.rooms;
-          const fplaced = projectType === "apartment" ? sliceApartmentLayout(points, facing, froom, fcores, layoutVariant) : sliceLayoutV2(points, facing, froom, fcores, shapeType, v2sb, v2lMeta, layoutVariant).rooms;
+          const fplaced = projectType === "apartment" ? sliceApartmentLayout(points, facing, froom, fcores, layoutVariant) : sliceLayoutV2(points, facing, froom, fcores, shapeType, v2sb, v2lMeta, layoutVariant, Math.max(3.5, corridorWidth)).rooms;
           const used = f.fullParking ? footprint : coreArea + f.rooms.reduce((b, r) => b + r.sqft, 0);
           return (
             <div key={i} style={{ marginBottom: 22 }}>
