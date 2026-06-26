@@ -2814,19 +2814,6 @@ export default function App() {
               </div>
             )}
             <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 8 }}>{styleObj.icon} {styleObj.label} — {floorList[layoutFloor]?.label}</div>
-            <div style={{ marginBottom: 10 }}>
-              <div style={{ color: C.muted, fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Layout options — tap to compare</div>
-              <div style={{ display: "flex", gap: 8 }}>
-                {[["A", 0], ["B", 1], ["C", 2]].map(([lbl, v]) => (
-                  <div key={v} onClick={() => setLayoutVariant(v)} style={{ flex: 1, textAlign: "center", padding: "10px 0", borderRadius: 10, border: `1.5px solid ${layoutVariant === v ? C.accent : C.border}`, background: layoutVariant === v ? C.accent : C.card, color: layoutVariant === v ? "#fff" : C.text, cursor: "pointer", fontSize: 13, fontWeight: 700 }}>Option {lbl}</div>
-                ))}
-              </div>
-              {shapeType !== "lshape" && (
-                <div onClick={() => setLayoutVariant(3)} style={{ marginTop: 8, textAlign: "center", padding: "10px 0", borderRadius: 10, border: `1.5px solid ${layoutVariant === 3 ? C.accent : C.border}`, background: layoutVariant === 3 ? C.accent : C.card, color: layoutVariant === 3 ? "#fff" : C.text, cursor: "pointer", fontSize: 13, fontWeight: 700 }}>
-                  🚪 Corridor plan — every room off a central hallway
-                </div>
-              )}
-            </div>
             <div id="plotai-export-area"><SliceView points={points} rooms={placed} facing={facing} gates={gates} /></div>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
               {placed.map((b, k) => <span key={k} style={{ display: "flex", alignItems: "center", gap: 5, color: C.muted, fontSize: 11.5 }}><span style={{ width: 9, height: 9, borderRadius: 2, background: b.color }} />{b.label}{b.zone ? ` · ${b.zone}` : ""}</span>)}
@@ -2965,6 +2952,18 @@ export default function App() {
           <div style={{ color: C.green, fontWeight: 800, fontSize: 30, letterSpacing: "-0.03em" }}>₹{inLakh(costLow)}L – ₹{inLakh(costHigh)}L</div>
           <div style={{ color: C.muted, fontSize: 11.5, marginTop: 2 }}>at ₹{rate.toLocaleString()}/sqft · approximate, varies by city & materials</div>
         </div>
+        <span style={s.label}>Layout option</span>
+        <div style={{ color: C.muted, fontSize: 11.5, marginBottom: 10, lineHeight: 1.5 }}>Same rooms, arranged differently. Tap to compare — every floor plan below updates instantly.</div>
+        <div style={{ display: "flex", gap: 8, marginBottom: shapeType !== "lshape" ? 8 : 18 }}>
+          {[["A", 0], ["B", 1], ["C", 2]].map(([lbl, v]) => (
+            <div key={v} onClick={() => setLayoutVariant(v)} style={{ flex: 1, textAlign: "center", padding: "11px 0", borderRadius: 10, border: `1.5px solid ${layoutVariant === v ? C.accent : C.border}`, background: layoutVariant === v ? C.accent : C.card, color: layoutVariant === v ? "#fff" : C.text, cursor: "pointer", fontSize: 13, fontWeight: 700 }}>Option {lbl}</div>
+          ))}
+        </div>
+        {shapeType !== "lshape" && (
+          <div onClick={() => setLayoutVariant(3)} style={{ marginBottom: 18, textAlign: "center", padding: "11px 0", borderRadius: 10, border: `1.5px solid ${layoutVariant === 3 ? C.accent : C.border}`, background: layoutVariant === 3 ? C.accent : C.card, color: layoutVariant === 3 ? "#fff" : C.text, cursor: "pointer", fontSize: 13, fontWeight: 700 }}>
+            🚪 Corridor plan — every room off a central hallway
+          </div>
+        )}
         {floorList.map((meta, i) => {
           const f = floorData[i] || { fullParking: false, rooms: [] };
           const fcores = [{ ...CORE.stairs, id: "stairs", sqft: CORE.stairs.min }, ...(liftOn ? [{ ...CORE.lift, id: "lift", sqft: CORE.lift.min }] : []),
