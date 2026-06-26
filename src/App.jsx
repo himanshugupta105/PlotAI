@@ -1333,10 +1333,8 @@ const PRIORITIES = [
 ];
 
 const STYLES = [
-  { id: "vastu",  label: "Vastu-First",       icon: "🧭", desc: "Rooms placed by Vastu directions", premium: false, needsVastu: true },
-  { id: "social", label: "Open & Social",     icon: "🛋️", desc: "Living, dining, kitchen flow together", premium: false },
-  { id: "light",  label: "Light & Air",       icon: "☀️", desc: "Max natural light & ventilation", premium: true },
-  { id: "compact",label: "Compact & Efficient", icon: "📐", desc: "Shared walls, low construction cost", premium: true },
+  { id: "vastu",  label: "Vastu-aligned",  icon: "🧭", desc: "Follows Vastu directions — cook in the South-East, sleep in the South-West, open North-East", needsVastu: true },
+  { id: "social", label: "Open & social",  icon: "🛋️", desc: "Living, dining and kitchen flow together; bedrooms kept quiet and private" },
 ];
 
 // ===== BRAND LOGO (vector recreation — the P with building silhouette) =====
@@ -1672,8 +1670,10 @@ export default function App() {
   const startFloors = () => {
     setFloorData(floorList.map(() => ({ fullParking: false, rooms: [] })));
     setCur(0); setStep("floor");
-    // builder floors: auto-build each floor as a complete unit right away
-    if (projectType === "builder" || projectType === "apartment") setTimeout(() => autoDistribute(), 0);
+    // ALWAYS auto-arrange first so the user sees a complete, realistic home immediately
+    // (their brief already told us everything — a 2BHK means 2 beds + 2 baths, etc.).
+    // They can then move rooms between floors only if they want to.
+    setTimeout(() => autoDistribute(), 0);
   };
   const addRoom = (typeId) => setFloorData(fd => fd.map((f, i) => i !== cur ? f : { ...f, rooms: [...f.rooms, { uid: UID++, typeId, sqft: ROOMS[typeId].min }] }));
   const addCustomRoom = () => {
@@ -1864,10 +1864,12 @@ export default function App() {
   };
 
   const pickStyle = (st) => {
-    if (st.premium) { setLockMsg(st.label); return; }
     if (st.needsVastu && !vastuOn) { setLockMsg("vastu-off"); return; }
     setLockMsg("");
     setActiveStyle(st.id);
+    // make the choice MEAN something: Open & social favours the variant with the most
+    // connected public zone (Option A); Vastu keeps the current variant so Vastu placement holds.
+    if (st.id === "social" && layoutVariant === 3) setLayoutVariant(0);
   };
 
   const s = {
@@ -2638,7 +2640,7 @@ export default function App() {
           {showFloorHint && cur === 0 && (
             <div style={{ background: "#1A1A1A", color: "#fff", borderRadius: 12, padding: "13px 14px", marginBottom: 14, display: "flex", alignItems: "flex-start", gap: 10 }}>
               <span style={{ fontSize: 16 }}>💡</span>
-              <div style={{ flex: 1, fontSize: 12.5, lineHeight: 1.5 }}>Tap a room below to place it on this floor — or hit <b>✨ Auto-place all</b> to let PlotAI arrange everything for you. You can do each floor in turn.</div>
+              <div style={{ flex: 1, fontSize: 12.5, lineHeight: 1.5 }}>We have already arranged your rooms across the floors based on your brief. Want to change a floor? Tap any room to move it, or add more below. Nothing here is required — it is ready as-is.</div>
               <button onClick={() => setShowFloorHint(false)} style={{ background: "transparent", border: "none", color: "#fff", fontSize: 18, cursor: "pointer", padding: 0, lineHeight: 1, opacity: 0.7 }}>×</button>
             </div>
           )}
@@ -2685,10 +2687,10 @@ export default function App() {
             {totalUnplaced() > 0 && (
               <div style={{ background: C.accent + "12", border: `1.5px solid ${C.accent}55`, borderRadius: 12, padding: 12, marginBottom: 14 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                  <span style={{ color: C.accent, fontSize: 12.5, fontWeight: 800 }}>📋 From your brief — tap to place here</span>
-                  <button onClick={autoDistribute} style={{ background: C.accent, border: "none", color: "#fff", borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontSize: 11.5, fontWeight: 700 }}>✨ Auto-place all</button>
+                  <span style={{ color: C.accent, fontSize: 12.5, fontWeight: 800 }}>➕ Add to this floor</span>
+                  <button onClick={autoDistribute} style={{ background: C.accent, border: "none", color: "#fff", borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontSize: 11.5, fontWeight: 700 }}>↻ Re-arrange all</button>
                 </div>
-                <div style={{ color: C.muted, fontSize: 11, marginBottom: 10 }}>{totalUnplaced()} room(s) from your brief still to place across your floors.</div>
+                <div style={{ color: C.muted, fontSize: 11, marginBottom: 10 }}>{totalUnplaced()} room(s) from your brief not yet on any floor — tap to add one here, or leave them out.</div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 7 }}>
                   {unplacedPool().map(item => {
                     const r = ROOMS[item.typeId];
@@ -2767,37 +2769,35 @@ export default function App() {
     const v2out = (activeStyle && projectType !== "apartment") ? sliceLayoutV2(points, facing, roomsForLayout, cores, shapeType, v2sb, v2lMeta, layoutVariant, Math.max(3.5, corridorWidth)) : null;
     const placed = activeStyle ? (projectType === "apartment" ? sliceApartmentLayout(points, facing, roomsForLayout, cores, layoutVariant) : (v2out ? v2out.rooms : [])) : [];
     const v2decomp = v2out ? v2out.decomp : null;
-    const styleObj = STYLES.find(x => x.id === activeStyle);
+    const styleObj = STYLES.find(x => x.id === activeStyle) || STYLES[1];
     const reason = {
       vastu: "Kitchen placed toward the South-East (fire), master bedroom in the stable South-West, pooja in the sacred North-East, toilets kept away from the North-East.",
       social: "Living, dining and kitchen clustered into one social zone near the front, with bedrooms grouped away for quiet and privacy.",
-      light: "Living spaces and bedrooms pushed to the outer walls for natural light; service rooms placed toward the interior.",
-      compact: "Wet rooms grouped to share plumbing walls and circulation kept tight to reduce construction cost.",
     };
     return (
       <div style={s.root}>
-        <div style={s.header}>{back(() => { setCur(floorList.length - 1); setStep("floor"); })}<div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 17, letterSpacing: "-0.02em" }}>Choose Layout Style</div><div style={{ color: C.muted, fontSize: 12 }}>How should your rooms be arranged?</div></div></div>
+        <div style={s.header}>{back(() => { setCur(floorList.length - 1); setStep("floor"); })}<div style={{ flex: 1 }}><div style={{ fontWeight: 700, fontSize: 17, letterSpacing: "-0.02em" }}>How should your home feel?</div><div style={{ color: C.muted, fontSize: 12 }}>The same question an architect would ask you</div></div></div>
         <ProgressArc />
         <div style={s.body}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
             {STYLES.map(st => {
               const selected = activeStyle === st.id;
-              const locked = st.premium;
               return (
-                <div key={st.id} onClick={() => pickStyle(st)} style={{ position: "relative", background: selected ? C.selBg : C.card, border: `1.5px solid ${selected ? C.accent : C.border}`, borderRadius: 12, padding: "14px 12px", cursor: "pointer", opacity: locked ? 0.75 : 1 }}>
-                  {locked && <div style={{ position: "absolute", top: 8, right: 8, background: C.amber + "26", color: C.amber, border: `1px solid ${C.amber}66`, borderRadius: 6, padding: "1px 6px", fontSize: 9, fontWeight: 800 }}>🔒 PREMIUM</div>}
-                  <div style={{ fontSize: 22 }}>{st.icon}</div>
-                  <div style={{ fontWeight: 700, fontSize: 13, marginTop: 6 }}>{st.label}</div>
-                  <div style={{ color: C.muted, fontSize: 10.5, marginTop: 2, lineHeight: 1.4 }}>{st.desc}</div>
+                <div key={st.id} onClick={() => pickStyle(st)} style={{ display: "flex", alignItems: "center", gap: 14, background: selected ? C.selBg : C.card, border: `1.5px solid ${selected ? C.accent : C.border}`, borderRadius: 14, padding: "16px 16px", cursor: "pointer" }}>
+                  <div style={{ fontSize: 28, lineHeight: 1 }}>{st.icon}</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 700, fontSize: 15 }}>{st.label}</div>
+                    <div style={{ color: C.muted, fontSize: 11.5, marginTop: 3, lineHeight: 1.45 }}>{st.desc}</div>
+                  </div>
+                  <div style={{ width: 20, height: 20, borderRadius: "50%", border: `2px solid ${selected ? C.accent : C.border}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{selected && <div style={{ width: 10, height: 10, borderRadius: "50%", background: C.accent }} />}</div>
                 </div>
               );
             })}
           </div>
 
-          {lockMsg === "vastu-off" && <div style={{ background: C.selBg, border: `1px solid ${C.purple}55`, borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 12.5, color: C.purple }}>Turn on Vastu Mode (on the Direction step) to use the Vastu-First style.</div>}
-          {lockMsg && lockMsg !== "vastu-off" && <div style={{ background: C.amber + "18", border: `1px solid ${C.amber}55`, borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 12.5, color: C.amber }}>✨ <b>{lockMsg}</b> is a Premium style. Upgrade to unlock more layout styles, multiple AI options, and contractor-ready export.</div>}
+          {lockMsg === "vastu-off" && <div style={{ background: C.selBg, border: `1px solid ${C.purple}55`, borderRadius: 10, padding: 12, marginBottom: 14, fontSize: 12.5, color: C.purple }}>To use the Vastu-aligned style, turn on Vastu Mode on the Direction step first.</div>}
 
-          {!activeStyle && <div style={{ background: C.card, border: `1px dashed ${C.border}`, borderRadius: 12, padding: 24, textAlign: "center", color: C.muted, fontSize: 13, marginBottom: 16 }}>Pick a free style above to generate your layout.</div>}
+          {!activeStyle && <div style={{ background: C.card, border: `1px dashed ${C.border}`, borderRadius: 12, padding: 24, textAlign: "center", color: C.muted, fontSize: 13, marginBottom: 16 }}>Choose a feel above and your layout appears instantly.</div>}
 
           {activeStyle && <>
             {floorList.length > 1 && (
@@ -2902,7 +2902,7 @@ export default function App() {
             })()}
             <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, margin: "14px 0" }}>
               <div style={{ color: C.green, fontWeight: 700, fontSize: 13, marginBottom: 4 }}>Why this arrangement</div>
-              <div style={{ color: C.muted, fontSize: 12.5, lineHeight: 1.5 }}>{reason[activeStyle]}</div>
+              <div style={{ color: C.muted, fontSize: 12.5, lineHeight: 1.5 }}>{reason[activeStyle] || reason.social}</div>
             </div>
             <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
               <button onClick={() => sharePlan("share")} style={{ flex: 2, padding: "13px 0", borderRadius: 12, border: "none", background: C.accent, color: "#fff", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>📤 Share my plan</button>
